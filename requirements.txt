@@ -1,0 +1,16 @@
+pydantic~=2.3
+pydantic-settings~=2.3
+pyrogram~=2.0
+pytgcalls~=2.0 ; platform_system != "Windows"
+sqlalchemy~=2.0
+asyncpg~=0.28
+aiosqlite
+alembic~=1.10
+httpx~=0.25
+requests
+redis>=5.0,<6.0
+structlog~=24.0
+yt-dlp
+prometheus-client
+pytest~=7.0
+pytest-asyncio~=0.21
