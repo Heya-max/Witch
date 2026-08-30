@@ -1,18 +1,37 @@
-from pydantic import Field, ValidationError
+from typing import Annotated
+
+from pydantic import BeforeValidator, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _empty_to_none(value):
+    """Coerce an empty-string env value (e.g. Docker's `KEY: ${VAR:-}`) to None.
+
+    Optional ``int`` settings otherwise crash pydantic on ``""``, which made the
+    bot exit-and-restart-loop when an optional variable was left blank.
+    """
+    if isinstance(value, str) and value.strip() == "":
+        return None
+    return value
+
+
+OptionalInt = Annotated[int | None, BeforeValidator(_empty_to_none)]
+
+
 class Settings(BaseSettings):
-    BOT_TOKEN: str = Field(..., description="Telegram bot token")
-    API_ID: int | None = None
+    # min_length=1: a blank secret must fail fast instead of getting deep into
+    # auth only to crash later (and it keeps Docker `KEY: ${VAR:-}` from
+    # silently producing a bootable-but-broken bot).
+    BOT_TOKEN: str = Field(..., min_length=1, description="Telegram bot token")
+    API_ID: OptionalInt = None
     API_HASH: str | None = None
-    DATABASE_URL: str = Field(..., description="Async SQLAlchemy database URL")
-    REDIS_URL: str = Field(..., description="Redis connection URL")
+    DATABASE_URL: str = Field(..., min_length=1, description="Async SQLAlchemy database URL")
+    REDIS_URL: str = Field(..., min_length=1, description="Redis connection URL")
     LOG_LEVEL: str = "INFO"
-    BOT_OWNER_ID: int | None = None
-    # Prometheus metrics endpoint. Defaults to on (127.0.0.1 binding inside the
+    BOT_OWNER_ID: OptionalInt = None
+    # Prometheus metrics endpoint. Defaults to on (binding inside the
     # container); set to 0 to disable entirely.
-    METRICS_PORT: int | None = 9090
+    METRICS_PORT: OptionalInt = 9090
 
     # Queue health / limits.
     # - QUEUE_MAX_SIZE caps tracks per chat so a runaway playlist can't wedge
@@ -32,7 +51,7 @@ class Settings(BaseSettings):
     # USERBOT_SESSION_STRING (an in-memory session string) to enable it.
     USERBOT_SESSION: str | None = None
     USERBOT_SESSION_STRING: str | None = None
-    USERBOT_API_ID: int | None = None
+    USERBOT_API_ID: OptionalInt = None
     USERBOT_API_HASH: str | None = None
 
     model_config = SettingsConfigDict(env_file=".env")
