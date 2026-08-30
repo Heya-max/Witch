@@ -2,32 +2,52 @@ import asyncio
 import logging
 from typing import Any
 
+import pyrogram.errors as _pyro_errors
 from pyrogram import Client
 
 try:
     from pytgcalls import PyTgCalls
-    from pytgcalls.types.input_stream import AudioPiped
+    from pytgcalls import filters as fl
+    from pytgcalls.types import MediaStream, StreamEnded
 except Exception:  # pragma: no cover - optional dependency
     PyTgCalls = None
-    AudioPiped = None
+    MediaStream = None
+    StreamEnded = None
 
 from .audio_engine import AudioEngine
 
 logger = logging.getLogger(__name__)
+
+# py-tgcalls imports `GroupcallForbidden`/`GroupcallInvalid` from pyrogram.errors,
+# but modern Pyrogram releases no longer define them. Add safe aliases so PyTgCalls
+# can be initialized (these are only ever referenced in `except` clauses). This is
+# defensive: the alias only applies when the symbol is genuinely missing.
+for _missing in ("GroupcallForbidden", "GroupcallInvalid"):
+    if not hasattr(_pyro_errors, _missing):
+        _Base = getattr(_pyro_errors, "RPCError", Exception)
+        setattr(_pyro_errors, _missing, type(_missing, (_Base,), {}))
 
 
 class VoiceManager:
     """Manage voice chat connections and playback using pytgcalls + AudioEngine.
 
     Behavior:
-    - If `pytgcalls` and `AudioPiped` are available, prefer using `AudioPiped`
+    - If `pytgcalls` and `MediaStream` are available, prefer using `MediaStream`
       so pytgcalls handles FFmpeg piping internally.
     - Otherwise, use a per-chat `AudioEngine` to spawn FFmpeg locally.
     """
 
     def __init__(self, app: Client) -> None:
         self._app = app
-        self._pytgcalls = PyTgCalls(app) if PyTgCalls is not None else None
+        self._pytgcalls = None
+        if PyTgCalls is not None:
+            try:
+                self._pytgcalls = PyTgCalls(app)
+            except Exception:
+                # An invalid/None MTProto client may fail to initialize; keep
+                # voice disabled in that case (e.g. some test setups).
+                logger.warning("failed to initialize PyTgCalls; voice disabled")
+                self._pytgcalls = None
         self._joined: set[int] = set()
         # per-chat FFmpeg engine so different chats don't share one process
         self._audio: dict[int, AudioEngine] = {}
@@ -35,16 +55,13 @@ class VoiceManager:
         self._on_stream_end_callbacks: dict[int, list] = {}
         self._callback_tasks: set[asyncio.Task] = set()
 
-        # Try to hook into pytgcalls stream-end event if available
-        if self._pytgcalls is not None:
-            handler = getattr(self._pytgcalls, "on_stream_end", None)
-            if callable(handler):
-                try:
-                    # register our internal handler
-                    handler(self._internal_stream_end_handler)
-                except Exception:
-                    # some pytgcalls versions may have different API; ignore
-                    logger.debug("pytgcalls.on_stream_end registration failed")
+        # Hook into pytgcalls stream-end event if available
+        if self._pytgcalls is not None and StreamEnded is not None:
+            try:
+                self._pytgcalls.on_update(fl.stream_end())(self._internal_stream_end_handler)
+            except Exception:
+                # some pytgcalls versions may have a different API; ignore
+                logger.debug("pytgcalls stream-end registration failed")
 
     async def start(self) -> None:
         if self._pytgcalls is None:
@@ -55,10 +72,14 @@ class VoiceManager:
     async def stop(self) -> None:
         """Shut down pytgcalls, pending callbacks, and all per-chat engines."""
         if self._pytgcalls is not None:
-            try:
-                await self._pytgcalls.stop()
-            except Exception:
-                logger.exception("failed to stop pytgcalls")
+            method = getattr(self._pytgcalls, "stop", None)
+            if callable(method):
+                try:
+                    await method()
+                except Exception:
+                    logger.exception("failed to stop pytgcalls")
+            else:
+                logger.debug("pytgcalls has no stop(); skipped")
 
         for task in list(self._callback_tasks):
             if not task.done():
@@ -84,7 +105,7 @@ class VoiceManager:
 
         try:
             # Join without an active stream; stream will be started via `play`
-            await self._pytgcalls.join_group_call(chat_id, None)  # type: ignore[arg-type]
+            await self._pytgcalls.play(chat_id)
             self._joined.add(chat_id)
             logger.info("joined voice chat %s", chat_id)
         except Exception as e:
@@ -100,7 +121,7 @@ class VoiceManager:
             return
 
         try:
-            await self._pytgcalls.leave_group_call(chat_id)
+            await self._pytgcalls.leave_call(chat_id)
         except Exception as e:
             logger.exception("failed to leave voice chat %s: %s", chat_id, e)
             raise
@@ -123,7 +144,7 @@ class VoiceManager:
     async def play(self, chat_id: int, input_source: str, volume: float = 1.0) -> dict:
         """Join the chat's voice call (if needed) and start playback.
 
-        If `AudioPiped` is available, pytgcalls manages FFmpeg internally and
+        If `MediaStream` is available, pytgcalls manages FFmpeg internally and
         the call is joined in the same operation. Otherwise a per-chat
         `AudioEngine` (plain FFmpeg) is started locally. A `volume` other than
         `1.0` is applied via an FFmpeg volume filter.
@@ -133,17 +154,16 @@ class VoiceManager:
         # process.
         await self._stop_engine(chat_id)
 
-        if self._pytgcalls and AudioPiped is not None:
+        if self._pytgcalls and MediaStream is not None:
             try:
-                # AudioPiped will run ffmpeg internally; pass the source directly
                 ffp = f"-af volume={volume:g}" if volume != 1.0 else ""
-                stream = AudioPiped(input_source, ffmpeg_parameters=ffp) if ffp else AudioPiped(input_source)
-                await self._pytgcalls.join_group_call(chat_id, stream)
+                stream = MediaStream(input_source, ffmpeg_parameters=ffp) if ffp else MediaStream(input_source)
+                await self._pytgcalls.play(chat_id, stream)
                 self._joined.add(chat_id)
-                logger.info("playing %s in chat %s via AudioPiped", input_source, chat_id)
+                logger.info("playing %s in chat %s via MediaStream", input_source, chat_id)
                 return {"mode": "pytgcalls"}
             except Exception:
-                logger.exception("AudioPiped playback failed; falling back to AudioEngine")
+                logger.exception("MediaStream playback failed; falling back to AudioEngine")
 
         # Fallback: start per-chat AudioEngine (does not yet pipe into pytgcalls)
         engine = AudioEngine()
@@ -161,16 +181,16 @@ class VoiceManager:
         """
         await self.stop_playback(chat_id)
 
-        if self._pytgcalls and AudioPiped is not None:
+        if self._pytgcalls and MediaStream is not None:
             try:
                 ffp = f"-af volume={volume:g}" if volume != 1.0 else ""
-                stream = AudioPiped(input_source, ffmpeg_parameters=ffp) if ffp else AudioPiped(input_source)
-                await self._pytgcalls.join_group_call(chat_id, stream)
+                stream = MediaStream(input_source, ffmpeg_parameters=ffp) if ffp else MediaStream(input_source)
+                await self._pytgcalls.play(chat_id, stream)
                 self._joined.add(chat_id)
-                logger.info("volume set for %s in chat %s via AudioPiped", volume, chat_id)
+                logger.info("volume set for %s in chat %s via MediaStream", volume, chat_id)
                 return {"mode": "pytgcalls"}
             except Exception:
-                logger.exception("AudioPiped volume change failed; falling back to AudioEngine")
+                logger.exception("MediaStream volume change failed; falling back to AudioEngine")
 
         engine = AudioEngine()
         self._audio[chat_id] = engine
@@ -180,20 +200,20 @@ class VoiceManager:
 
     async def pause_playback(self, chat_id: int) -> None:
         """Pause the active stream in a chat (engine, else pytgcalls)."""
-        # If this chat is engine-backed (pytgcalls unavailable or AudioPiped
+        # If this chat is engine-backed (pytgcalls unavailable or MediaStream
         # fell back), pause the engine directly so the action actually takes
         # effect instead of being a no-op against pytgcalls.
         if chat_id in self._audio:
             await self._audio[chat_id].pause()
             return
         if self._pytgcalls is not None:
-            method: Any = getattr(self._pytgcalls, "pause_stream", None)
+            method: Any = getattr(self._pytgcalls, "pause", None)
             if callable(method):
                 try:
                     await method(chat_id)
                     return
                 except Exception:
-                    logger.debug("pytgcalls pause_stream failed for %s", chat_id)
+                    logger.debug("pytgcalls pause failed for %s", chat_id)
         raise RuntimeError("no active playback to pause")
 
     async def resume_playback(self, chat_id: int) -> None:
@@ -202,13 +222,13 @@ class VoiceManager:
             await self._audio[chat_id].resume()
             return
         if self._pytgcalls is not None:
-            method: Any = getattr(self._pytgcalls, "resume_stream", None)
+            method: Any = getattr(self._pytgcalls, "resume", None)
             if callable(method):
                 try:
                     await method(chat_id)
                     return
                 except Exception:
-                    logger.debug("pytgcalls resume_stream failed for %s", chat_id)
+                    logger.debug("pytgcalls resume failed for %s", chat_id)
         raise RuntimeError("no active playback to resume")
 
     def register_on_stream_end(self, chat_id: int, callback) -> None:
@@ -224,24 +244,14 @@ class VoiceManager:
         if not any(_same(cb, callback) for cb in lst):
             lst.append(callback)
 
-    async def _internal_stream_end_handler(self, event) -> None:
+    async def _internal_stream_end_handler(self, client, update: StreamEnded) -> None:
         """Internal handler called by pytgcalls when a stream ends.
 
-        This is best-effort: different pytgcalls versions supply different event
-        shapes. We attempt to extract a chat id and notify registered callbacks.
+        `client` is the PyTgCalls instance (unused) and `update` is a
+        `StreamEnded` event carrying the chat id. We notify registered
+        per-chat callbacks.
         """
-        # Try common event attributes to find chat_id
-        chat_id = None
-        try:
-            if hasattr(event, "chat_id"):
-                chat_id = event.chat_id
-            elif hasattr(event, "group_call") and hasattr(event.group_call, "chat_id"):
-                chat_id = event.group_call.chat_id
-            elif hasattr(event, "call") and hasattr(event.call, "chat_id"):
-                chat_id = event.call.chat_id
-        except Exception:
-            logger.debug("could not extract chat_id from stream-end event")
-
+        chat_id = getattr(update, "chat_id", None)
         if chat_id is None:
             return
 
@@ -259,7 +269,7 @@ class VoiceManager:
         """Stop playback for a chat: stop pytgcalls stream and this chat's audio engine."""
         if self._pytgcalls is not None:
             try:
-                await self._pytgcalls.leave_group_call(chat_id)
+                await self._pytgcalls.leave_call(chat_id)
             except Exception:
                 logger.exception("failed to leave group call for %s", chat_id)
 

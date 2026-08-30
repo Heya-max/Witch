@@ -23,7 +23,7 @@ async def test_voice_manager_stream_end_triggers_callback():
             self.chat_id = chat_id
 
     # call internal handler directly
-    await vm._internal_stream_end_handler(Event(12345))
+    await vm._internal_stream_end_handler(None, Event(12345))
     await asyncio.sleep(0)
 
     assert called.is_set()

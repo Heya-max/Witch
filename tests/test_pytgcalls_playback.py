@@ -26,18 +26,19 @@ class FakePyTgCalls:
     async def stop(self):
         self.stop_called = True
 
-    async def join_group_call(self, chat_id, media):
-        self.joins.append((chat_id, media))
+    async def play(self, chat_id, stream=None):
+        self.joins.append((chat_id, stream))
         return self
 
-    async def play(self):
+    async def leave_call(self, chat_id):
         return
 
-    async def leave_group_call(self, chat_id):
-        return
+    def on_update(self, filters=None):
+        def decorator(func):
+            self.stream_end_handler = func
+            return func
 
-    def on_stream_end(self, handler):
-        self.stream_end_handler = handler
+        return decorator
 
 
 class StreamEndEvent:
@@ -48,7 +49,7 @@ class StreamEndEvent:
 @pytest.mark.asyncio
 async def test_pytgcalls_playback_advances_on_stream_end(monkeypatch):
     monkeypatch.setattr(voice_mod, "PyTgCalls", FakePyTgCalls)
-    monkeypatch.setattr(voice_mod, "AudioPiped", FakeAudioPiped)
+    monkeypatch.setattr(voice_mod, "MediaStream", FakeAudioPiped)
 
     vm = VoiceManager(app=object())
     assert vm._pytgcalls is not None
@@ -64,14 +65,14 @@ async def test_pytgcalls_playback_advances_on_stream_end(monkeypatch):
     assert player.current is not None
     assert player.current.id == "t1"
 
-    # A single join+play via AudioPiped, and the stream-end handler is wired
+    # A single play via MediaStream, and the stream-end handler is wired
     pytgcalls = vm._pytgcalls
     assert len(pytgcalls.joins) == 1
     assert isinstance(pytgcalls.joins[0][1], FakeAudioPiped)
     assert pytgcalls.stream_end_handler is not None
 
     # Simulate the group call stream ending -> player auto-advances
-    await pytgcalls.stream_end_handler(StreamEndEvent(12345))
+    await pytgcalls.stream_end_handler(pytgcalls, StreamEndEvent(12345))
     await asyncio.sleep(0.1)
 
     assert player.current is not None

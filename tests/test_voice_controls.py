@@ -13,7 +13,7 @@ class FakePyTgCalls:
         self.paused = []
         self.resumed = []
         self.streams = {}
-        self.on_stream_end = None
+        self.stream_end_handler = None
 
     async def start(self):
         self.started = True
@@ -21,37 +21,51 @@ class FakePyTgCalls:
     async def stop(self):
         self.stopped = True
 
-    async def join_group_call(self, chat_id, stream):
+    async def play(self, chat_id, stream=None):
         self.joined.append(chat_id)
         self.streams[chat_id] = stream
 
-    async def leave_group_call(self, chat_id):
+    async def leave_call(self, chat_id):
         self.left.append(chat_id)
         self.streams.pop(chat_id, None)
 
-    async def pause_stream(self, chat_id):
+    async def pause(self, chat_id):
         self.paused.append(chat_id)
 
-    async def resume_stream(self, chat_id):
+    async def resume(self, chat_id):
         self.resumed.append(chat_id)
+
+    def on_update(self, filters=None):
+        def decorator(func):
+            self.stream_end_handler = func
+            return func
+
+        return decorator
 
 
 class MinimalPyTgCalls:
-    """Like FakePyTgCalls but WITHOUT pause_stream/resume_stream."""
+    """Like FakePyTgCalls but WITHOUT pause/resume."""
 
     def __init__(self, app):
         self.app = app
-        self.on_stream_end = None
+        self.stream_end_handler = None
         self.joined = []
 
-    async def join_group_call(self, chat_id, stream):
+    async def play(self, chat_id, stream=None):
         self.joined.append(chat_id)
 
-    async def leave_group_call(self, chat_id):
+    async def leave_call(self, chat_id):
         pass
 
+    def on_update(self, filters=None):
+        def decorator(func):
+            self.stream_end_handler = func
+            return func
 
-class FakeAudioPiped:
+        return decorator
+
+
+class FakeMediaStream:
     def __init__(self, media_path, **kwargs):
         self.media_path = media_path
         self.kwargs = kwargs
@@ -60,7 +74,7 @@ class FakeAudioPiped:
 @pytest.fixture
 def voice_with_pytgcalls(monkeypatch):
     monkeypatch.setattr(voice_mod, "PyTgCalls", FakePyTgCalls)
-    monkeypatch.setattr(voice_mod, "AudioPiped", FakeAudioPiped)
+    monkeypatch.setattr(voice_mod, "MediaStream", FakeMediaStream)
     vm = VoiceManager(None)
     assert vm._pytgcalls is not None
     return vm
@@ -101,7 +115,7 @@ async def test_pause_and_resume_pytgcalls(voice_with_pytgcalls):
 @pytest.mark.asyncio
 async def test_pause_requires_active_playback(monkeypatch):
     monkeypatch.setattr(voice_mod, "PyTgCalls", MinimalPyTgCalls)
-    monkeypatch.setattr(voice_mod, "AudioPiped", FakeAudioPiped)
+    monkeypatch.setattr(voice_mod, "MediaStream", FakeMediaStream)
     vm = VoiceManager(None)
     with pytest.raises(RuntimeError):
         await vm.pause_playback(5)
@@ -127,10 +141,10 @@ class FakeAudioEngine:
 
 
 def _engine_vm(monkeypatch):
-    # pytgcalls present (with pause/resume methods) but AudioPiped fallback
+    # pytgcalls present (with pause/resume methods) but MediaStream fallback
     # triggers engine mode.
     monkeypatch.setattr(voice_mod, "PyTgCalls", FakePyTgCalls)
-    monkeypatch.setattr(voice_mod, "AudioPiped", FakeAudioPiped)
+    monkeypatch.setattr(voice_mod, "MediaStream", FakeMediaStream)
     from app.player import voice as vm_mod
 
     monkeypatch.setattr(vm_mod, "AudioEngine", FakeAudioEngine)
