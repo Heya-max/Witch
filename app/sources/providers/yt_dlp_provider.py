@@ -1,4 +1,6 @@
+import glob
 import logging
+import os
 
 from yt_dlp import YoutubeDL
 
@@ -9,14 +11,16 @@ logger = logging.getLogger(__name__)
 
 
 class YtDlpProvider(MusicSource):
-    """Provider using yt-dlp for search and audio resolution.
+    """Provider using yt-dlp for search, audio resolution and downloads.
 
     Notes:
     - Only extracts metadata and direct audio URLs exposed by yt-dlp.
     - Do NOT use this to bypass DRM or access restricted content.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, search_prefix: str = "ytsearch", search_limit: int = 5) -> None:
+        self.search_prefix = search_prefix
+        self.search_limit = search_limit
         self.ydl_opts = {
             "format": "bestaudio/best",
             "quiet": True,
@@ -24,9 +28,11 @@ class YtDlpProvider(MusicSource):
             "skip_download": True,
         }
 
+    def _search_query(self, query: str) -> str:
+        return f"{self.search_prefix}{self.search_limit}:{query}"
+
     async def search(self, query: str) -> list[Track]:
-        # Use ytsearch to find videos
-        q = f"ytsearch5:{query}"
+        q = self._search_query(query)
         with YoutubeDL(self.ydl_opts) as ydl:
             try:
                 info = ydl.extract_info(q, download=False)
@@ -100,3 +106,37 @@ class YtDlpProvider(MusicSource):
             return best["url"]
 
         raise RuntimeError("No playable audio URL found")
+
+    def download(self, source_id: str, dest_dir: str, *, max_filesize: int = 50 * 1024 * 1024) -> str:
+        """Download the best audio stream to `dest_dir` and return the resulting file path.
+
+        Blocking; call via `asyncio.to_thread` from async code.
+        Raises `RuntimeError` when no audio file could be produced.
+        """
+        url = source_id if source_id.startswith("http") else f"https://www.youtube.com/watch?v={source_id}"
+        opts = dict(self.ydl_opts)
+        opts["format"] = "bestaudio/best"
+        opts["skip_download"] = False
+        opts["outtmpl"] = os.path.join(dest_dir, "%(id)s.%(ext)s")
+        opts["max_filesize"] = max_filesize
+
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+
+        if info is None:
+            raise RuntimeError("yt-dlp download returned no info")
+
+        requested = info.get("requested_downloads") or []
+        for item in requested:
+            fp = item.get("filepath")
+            if fp and os.path.exists(fp):
+                return fp
+        fp = info.get("filepath")
+        if fp and os.path.exists(fp):
+            return fp
+
+        files = sorted(glob.glob(os.path.join(dest_dir, "*")))
+        if files:
+            return files[0]
+
+        raise RuntimeError("yt-dlp did not produce a file")

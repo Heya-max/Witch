@@ -130,6 +130,25 @@ async def test_play_handler_shows_picker_on_multiple_results():
 
 
 @pytest.mark.asyncio
+async def test_picker_buttons_show_duration():
+    from app.bot.handlers.playback import _offer_picker
+    from app.player.models import Track
+
+    tracks = [
+        Track(id="1", title="Long Song Title", duration=125),
+        Track(id="2", title="Short", duration=5),
+    ]
+    provider = FakeProvider(tracks)
+    client = type("C", (), {"player_manager": object()})
+    msg = FakeMessage(chat_id=1, user_id=7)
+    shown = await _offer_picker(client, msg, 1, provider, tracks)
+    assert shown
+    labels = [row[0].text for row in msg.reply_markup.inline_keyboard]
+    assert any("[2:05]" in label for label in labels)
+    assert any("[0:05]" in label for label in labels)
+
+
+@pytest.mark.asyncio
 async def test_play_handler_auto_enqueues_single_result():
     from app.bot.handlers.playback import play_handler
     from app.player.models import Track

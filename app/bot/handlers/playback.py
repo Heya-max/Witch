@@ -291,8 +291,14 @@ async def _offer_picker(
         "requested_by": message.from_user.id if message.from_user is not None else None,
         "action": "enqueue_next" if next_play else "enqueue",
     }
+    def _label(track: Track) -> str:
+        title = track.title[:40]
+        if track.duration:
+            title += f" [{_fmt_duration(track.duration)}]"
+        return title
+
     buttons = [
-        [InlineKeyboardButton(f"{i + 1}. {t.title[:50]}", callback_data=f"pick:{nonce}:{i}")]
+        [InlineKeyboardButton(f"{i + 1}. {_label(t)}", callback_data=f"pick:{nonce}:{i}")]
         for i, t in enumerate(search_results[:MAX_PICK_RESULTS])
     ]
     await message.reply_text("🎵 Search results — pick a track:", reply_markup=InlineKeyboardMarkup(buttons))
@@ -512,6 +518,11 @@ async def now_playing_handler(client: Client, message: Message) -> None:
         album = f"\n💿 Album: {cur.album}" if cur.album else ""
         dur = f"\n⏱️ Duration: {_fmt_duration(cur.duration)}" if cur.duration else ""
         who = f"\n👤 Requested by: {cur.requested_by}" if cur.requested_by else ""
+        if cur.thumbnail:
+            try:
+                await message.reply_photo(cur.thumbnail)
+            except Exception:
+                logger.debug("could not send now-playing thumbnail", exc_info=True)
         await message.reply_text(f"▶️ **Now playing:** {cur.title}{artist}{album}{dur}{who}")
     except Exception:
         await message.reply_text("❌ Could not fetch now-playing. Check logs.")
