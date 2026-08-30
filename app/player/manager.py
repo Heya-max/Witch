@@ -7,6 +7,7 @@ from enum import Enum, auto
 from ..sources.validation import is_http_url, looks_like_audio
 from .models import Track
 from .queue import Queue
+from .voice import NO_ACTIVE_VOICE_CHAT_REASON
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +236,23 @@ class Player:
                 self.state = PlaybackState.IDLE
                 raise
             except Exception as e:
+                # A deliberate user-facing guard ("no active voice chat yet")
+                # is not a playback fault: keep the likely-first track at the
+                # front of the queue and pause instead of logging a scary
+                # traceback, burning retries, or dropping the track. Once the
+                # user starts a voice chat, the next /play/enqueue picks up
+                # where we left off.
+                if isinstance(e, RuntimeError) and str(e) == NO_ACTIVE_VOICE_CHAT_REASON:
+                    logger.warning(
+                        "playback paused chat=%s track=%s: %s",
+                        self.chat_id,
+                        next_track.id,
+                        e,
+                    )
+                    await self.queue.add_next(next_track)
+                    self.current = None
+                    self.state = PlaybackState.IDLE
+                    return
                 logger.exception("playback failed chat=%s track=%s %s", self.chat_id, next_track.id, e)
                 # Retry the failed track up to `max_retries` (e.g. until a voice
                 # chat exists), then drop it so a bad track can't wedge the

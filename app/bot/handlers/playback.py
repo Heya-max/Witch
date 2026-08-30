@@ -2,6 +2,7 @@ import logging
 import os
 
 from pyrogram import Client, enums, filters
+from pyrogram.errors import QueryIdInvalid
 from pyrogram.handlers import CallbackQueryHandler, MessageHandler
 from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -472,6 +473,24 @@ def _cb_data(query: CallbackQuery) -> str:
     return raw.decode("utf-8") if isinstance(raw, bytes) else raw
 
 
+async def _quiet_answer(query: CallbackQuery, text: str, *, show_alert: bool = True) -> None:
+    """Answer a callback, tolerating an already-expired query.
+
+    Callback query IDs expire after a short while, and re-clicking a stale
+    button is common. Answering such a query raises QueryIdInvalid — there is
+    nothing useful to do, so swallow it quietly instead of letting it bubble
+    into the error path and dump a full traceback (often chained to the real
+    cause the alert was answering).
+    """
+    try:
+        if show_alert:
+            await query.answer(text, show_alert=True)
+        else:
+            await query.answer(text)
+    except QueryIdInvalid:
+        logger.debug("callback query expired when answering %r; ignoring", text)
+
+
 async def inline_callback(client: Client, query: CallbackQuery) -> None:
     data = _cb_data(query)
     try:
@@ -486,7 +505,7 @@ async def inline_callback(client: Client, query: CallbackQuery) -> None:
             await query.answer()
     except Exception:
         logger.exception("inline callback failed: %s", data)
-        await query.answer("Something went wrong.", show_alert=True)
+        await _quiet_answer(query, "Something went wrong.")
 
 
 async def pick_callback(client: Client, query: CallbackQuery) -> None:
@@ -537,7 +556,7 @@ async def pick_callback(client: Client, query: CallbackQuery) -> None:
             track.resolve_key = track.source_url or track.id
         track.source_url = playable
     except Exception:
-        await query.answer("Could not resolve audio for this track.", show_alert=True)
+        await _quiet_answer(query, "Could not resolve audio for this track.")
         return
 
     pm = getattr(client, "player_manager", None)

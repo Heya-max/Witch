@@ -130,7 +130,7 @@ async def test_retry_cap_drops_wedge_track():
 
     class AlwaysFailingVoice(FakeVoice):
         async def play(self, chat_id, input_source, volume=1.0):
-            raise RuntimeError("no active voice chat")
+            raise RuntimeError("stream is dead")
 
     voice = AlwaysFailingVoice()
     mgr = PlayerManager(voice, max_retries=1)
@@ -159,7 +159,7 @@ async def test_retry_cap_drops_wedge_track():
 async def test_zero_retries_never_drops():
     class AlwaysFailingVoice(FakeVoice):
         async def play(self, chat_id, input_source, volume=1.0):
-            raise RuntimeError("no active voice chat")
+            raise RuntimeError("stream is dead")
 
     mgr = PlayerManager(AlwaysFailingVoice(), max_retries=0)
     player = await mgr.get_player(4)
@@ -171,6 +171,38 @@ async def test_zero_retries_never_drops():
     await asyncio.sleep(0.1)
 
     assert [t.id for t in await player.queue.list()] == ["t1", "t2", "t3"]
+
+    await player.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_no_active_voice_chat_holds_track_at_front_without_retries():
+    # "no active voice chat" is a deliberate user-facing guard, NOT a stream
+    # fault: the track must stay at the front (never dropped or retried away)
+    # so the user can start a voice chat and the next /play picks it up.
+    class NoVoiceYet(FakeVoice):
+        async def play(self, chat_id, input_source, volume=1.0):
+            raise RuntimeError("no active voice chat to stream into")
+
+    mgr = PlayerManager(NoVoiceYet(), max_retries=1)
+    player = await mgr.get_player(5)
+
+    await player.enqueue(Track(id="t1", title="Track 1"))
+    await asyncio.sleep(0.1)
+    assert [t.id for t in await player.queue.list()] == ["t1"]
+    assert player.current is None
+    assert player.state is PlaybackState.IDLE
+    assert player._retries == 0
+
+    # repeated triggers keep the same track at the front - still around but at
+    # the head, and it never gets dropped even past max_retries
+    for i in range(3):
+        await player.enqueue(Track(id=f"t{i + 2}", title=f"Track {i + 2}"))
+        await asyncio.sleep(0.1)
+
+    ids = [t.id for t in await player.queue.list()]
+    assert ids[0] == "t1"
+    assert player._retries == 0
 
     await player.shutdown()
 

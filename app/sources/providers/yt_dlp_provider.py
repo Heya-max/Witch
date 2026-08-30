@@ -10,6 +10,24 @@ from ..base import MusicSource
 logger = logging.getLogger(__name__)
 
 
+class _SilentLogger:
+    """Swallow yt-dlp's own info/warning/error console output.
+
+    The app reports failures itself via `logger`; yt-dlp's internal
+    `report_error` would otherwise dump huge single-line messages (and full
+    stream URLs) straight to stderr on top of the structured logs.
+    """
+
+    def debug(self, msg: str, *args, **kwargs) -> None:
+        return None
+
+    def warning(self, msg: str, *args, **kwargs) -> None:
+        return None
+
+    def error(self, msg: str, *args, **kwargs) -> None:
+        return None
+
+
 class YtDlpProvider(MusicSource):
     """Provider using yt-dlp for search, audio resolution and downloads.
 
@@ -24,8 +42,15 @@ class YtDlpProvider(MusicSource):
         self.ydl_opts = {
             "format": "bestaudio/best",
             "quiet": True,
+            "no_warnings": True,
             "nocheckcertificate": True,
             "skip_download": True,
+            "logger": _SilentLogger(),
+            # Tolerate transient network faults (timeouts, TLS resets) with a
+            # couple of retries instead of failing the pick outright.
+            "socket_timeout": 15,
+            "retries": 5,
+            "extractor_retries": 3,
         }
 
     def _search_query(self, query: str) -> str:
