@@ -2,6 +2,7 @@ import os
 import sys
 import types
 
+import app.sources.providers.yt_dlp_provider as provider_mod
 import pytest
 
 
@@ -54,10 +55,77 @@ class FakeDownloadYDL(FakeYDL):
         return info
 
 
+class FakePlaylistYDL(FakeYDL):
+    def extract_info(self, query, download=False):
+        if query.startswith("scsearch"):
+            return {"entries": []}
+        return {
+            "_type": "playlist",
+            "id": "PL123",
+            "title": "Mixtape",
+            "entries": [
+                {
+                    "id": "a1",
+                    "title": "Track One",
+                    "artist": "Singer A",
+                    "duration": 180,
+                    "webpage_url": "https://youtu.be/a1",
+                },
+                {
+                    "id": "a2",
+                    "title": "Track Two",
+                    "duration": 90,
+                    "webpage_url": "https://youtu.be/a2",
+                },
+                None,
+            ],
+        }
+
+
 def make_fake_yt_dlp():
     mod = types.ModuleType("yt_dlp")
     mod.YoutubeDL = FakeYDL
     return mod
+
+
+@pytest.mark.asyncio
+async def test_resolve_playlist_flattens_entries(monkeypatch):
+    import app.sources.providers.yt_dlp_provider as provider_mod
+
+    monkeypatch.setattr(provider_mod, "YoutubeDL", FakePlaylistYDL)
+    provider = provider_mod.YtDlpProvider()
+
+    tracks = await provider.resolve_playlist("https://www.youtube.com/playlist?list=PL123")
+    assert len(tracks) == 2
+    assert tracks[0].id == "a1"
+    assert tracks[0].title == "Track One"
+    assert tracks[0].artist == "Singer A"
+    assert tracks[0].source == "yt-dlp"
+    assert tracks[1].title == "Track Two"
+
+
+@pytest.mark.asyncio
+async def test_resolve_playlist_single_video(monkeypatch):
+    import app.sources.providers.yt_dlp_provider as provider_mod
+
+    monkeypatch.setattr(provider_mod, "YoutubeDL", FakeYDL)
+    provider = provider_mod.YtDlpProvider()
+
+    tracks = await provider.resolve_playlist("https://youtu.be/abc123")
+    assert len(tracks) == 1
+    assert tracks[0].id == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_maybe_playlist_expands_url(monkeypatch):
+    import app.bot.handlers.playback as pb
+
+    monkeypatch.setattr(provider_mod, "YoutubeDL", FakePlaylistYDL)
+
+    assert await pb._maybe_playlist("some plain query") is None
+    tracks = await pb._maybe_playlist("https://www.youtube.com/playlist?list=PL123")
+    assert tracks is not None
+    assert [t.id for t in tracks] == ["a1", "a2"]
 
 
 @pytest.mark.asyncio
@@ -96,20 +164,18 @@ def test_yt_dlp_provider_download(monkeypatch, tmp_path):
 
 
 def test_platform_providers_search_prefixes():
-    from app.sources.providers.yt_dlp_platform import DeezerProvider, SoundCloudProvider, SpotifyProvider
+    from app.sources.providers.yt_dlp_platform import SoundCloudProvider
     from app.sources.providers.yt_dlp_provider import YtDlpProvider
 
     assert YtDlpProvider()._search_query("some song") == "ytsearch5:some song"
-    assert SpotifyProvider()._search_query("some song") == "spsearch5:some song"
     assert SoundCloudProvider()._search_query("some song") == "scsearch5:some song"
-    assert DeezerProvider()._search_query("some song") == "dzsearch5:some song"
 
 
 def test_default_providers_ordering():
     from app.sources import get_default_providers
     from app.sources.providers.simple_provider import SimpleProvider
-    from app.sources.providers.yt_dlp_platform import SpotifyProvider
+    from app.sources.providers.yt_dlp_platform import SoundCloudProvider
 
     providers = get_default_providers()
-    assert isinstance(providers[0], SpotifyProvider)
+    assert isinstance(providers[0], SoundCloudProvider)
     assert isinstance(providers[-1], SimpleProvider)

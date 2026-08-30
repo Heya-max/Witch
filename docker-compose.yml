@@ -1,10 +1,28 @@
 services:
   bot:
     build: .
-    env_file: .env
+    # Secrets come from the shell/.env; explicit ``environment`` (not env_file)
+    # so every variable is visible and BOT_TOKEN is required at startup.
     environment:
+      BOT_TOKEN: ${BOT_TOKEN:?set BOT_TOKEN in .env or the shell}
+      API_ID: ${API_ID:-}
+      API_HASH: ${API_HASH:-}
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/telegram_music
       REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      BOT_OWNER_ID: ${BOT_OWNER_ID:-}
+      LYRICS_API_BASE: ${LYRICS_API_BASE:-}
+      METRICS_PORT: ${METRICS_PORT:-9090}
+      QUEUE_MAX_SIZE: ${QUEUE_MAX_SIZE:-200}
+      QUEUE_MAX_AGE_SECONDS: ${QUEUE_MAX_AGE_SECONDS:-86400}
+      PLAY_MAX_RETRIES: ${PLAY_MAX_RETRIES:-2}
+      USERBOT_SESSION: ${USERBOT_SESSION:-}
+      USERBOT_SESSION_STRING: ${USERBOT_SESSION_STRING:-}
+      USERBOT_API_ID: ${USERBOT_API_ID:-}
+      USERBOT_API_HASH: ${USERBOT_API_HASH:-}
+    ports:
+      # Prometheus metrics endpoint. Set METRICS_PORT=0 to publish nothing.
+      - "${METRICS_PORT:-9090}:9090"
     depends_on:
       postgres:
         condition: service_healthy

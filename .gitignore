@@ -12,4 +12,5 @@ dist/
 *.egg-info/
 *.db
 *.session
+*.session-journal
 .DS_Store

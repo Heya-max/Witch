@@ -1,11 +1,21 @@
 import asyncio
 import random
 from collections import deque
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, func, select
 
 from ..db.models import QueueEntry
 from .models import Track
+
+
+class QueueFullError(Exception):
+    """Raised when adding a track would exceed the per-chat queue cap."""
+
+    def __init__(self, chat_id: int, limit: int) -> None:
+        super().__init__(f"the queue for chat {chat_id} is full ({limit} tracks max)")
+        self.chat_id = chat_id
+        self.limit = limit
 
 
 class Queue:
@@ -14,18 +24,24 @@ class Queue:
     If a `session_factory` is provided, entries are persisted in the database
     (``QueueEntry`` model); otherwise an in-memory deque is used. Either way
     the public API is the same threaded through an asyncio lock.
+
+    An optional `max_size` caps how many tracks a single chat may queue
+    (``QueueFullError`` is raised past it) so a runaway playlist cannot wedge
+    the player or balloon the database.
     """
 
     def __init__(
         self,
         session_factory=None,
         chat_id: int | None = None,
+        max_size: int | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._chat_id = chat_id
         self._items: deque[Track] = deque()
         self._lock = asyncio.Lock()
         self._persisted = session_factory is not None
+        self._max_size = max_size
 
     # ------------------------------------------------------------------ #
     # persistence helpers
@@ -36,10 +52,28 @@ class Queue:
         return list(result.scalars().all())
 
     @staticmethod
-    async def _row_to_track(row: QueueEntry) -> Track:
+    def _row_to_track(row: QueueEntry) -> Track | None:
+        """Reconstruct a Track, tolerating legacy/corrupt payload rows.
+
+        A row with a ``payload`` must parse into a real Track; if it does not
+        the row is corrupt and ``None`` is returned so callers can delete it
+        instead of letting it poison the whole queue. Rows *without* a payload
+        (written before the column existed) are rebuilt from the column values.
+        """
         if row.payload:
-            return Track.from_dict(row.payload)
-        return Track(id=row.track_id, title=row.title or row.track_id, requested_by=row.requested_by)
+            return Track.try_from_dict(row.payload)
+        track_id = (row.track_id or "").strip()
+        if not track_id:
+            return None
+        return Track(id=track_id, title=row.title or track_id, requested_by=row.requested_by)
+
+    async def _purge_bad_rows(self, s, rows: list[QueueEntry]) -> None:
+        """Delete rows that fail to parse; usually called before mutations."""
+        for row in rows:
+            if self._row_to_track(row) is None:
+                await s.delete(row)
+        if rows:
+            await s.flush()
 
     async def _db_add(self, track: Track, front: bool = False) -> int:
         async with self._session_factory() as s:
@@ -60,34 +94,53 @@ class Queue:
     async def _db_get(self, idx: int) -> Track | None:
         async with self._session_factory() as s:
             rows = await self._rows(s)
-            if 0 <= idx < len(rows):
-                return await self._row_to_track(rows[idx])
+            clean: list[Track] = []
+            for row in rows:
+                track = self._row_to_track(row)
+                if track is not None:
+                    clean.append(track)
+                else:
+                    await s.delete(row)
+            if 0 <= idx < len(clean):
+                return clean[idx]
             return None
 
     async def _db_pop_next(self) -> Track | None:
         async with self._session_factory() as s:
             rows = await self._rows(s)
-            if not rows:
-                return None
-            row = rows[0]
-            track = await self._row_to_track(row)
-            await s.delete(row)
+            track: Track | None = None
+            for row in rows:
+                candidate = self._row_to_track(row)
+                if candidate is not None:
+                    track = candidate
+                    await s.delete(row)
+                    break
+                # poisoned row at the front: drop it and keep scanning
+                await s.delete(row)
             await s.commit()
             return track
 
     async def _db_remove(self, position: int) -> Track | None:
         async with self._session_factory() as s:
             rows = await self._rows(s)
-            if position < 0 or position >= len(rows):
+            clean_rows: list[QueueEntry] = []
+            for row in rows:
+                if self._row_to_track(row) is not None:
+                    clean_rows.append(row)
+                else:
+                    await s.delete(row)
+            if position < 0 or position >= len(clean_rows):
                 return None
-            row = rows[position]
-            track = await self._row_to_track(row)
+            row = clean_rows[position]
+            track = self._row_to_track(row)
             await s.delete(row)
             await s.commit()
             return track
 
     async def _db_move(self, old_idx: int, new_idx: int) -> bool:
         async with self._session_factory() as s:
+            rows = await self._rows(s)
+            await self._purge_bad_rows(s, rows)
             rows = await self._rows(s)
             if not (0 <= old_idx < len(rows) and 0 <= new_idx < len(rows)):
                 return False
@@ -101,6 +154,8 @@ class Queue:
     async def _db_shuffle(self) -> None:
         async with self._session_factory() as s:
             rows = await self._rows(s)
+            await self._purge_bad_rows(s, rows)
+            rows = await self._rows(s)
             random.shuffle(rows)
             for i, row in enumerate(rows):
                 row.position = i
@@ -109,7 +164,15 @@ class Queue:
     async def _db_list(self) -> list[Track]:
         async with self._session_factory() as s:
             rows = await self._rows(s)
-            return [await self._row_to_track(r) for r in rows]
+            tracks: list[Track] = []
+            for row in rows:
+                track = self._row_to_track(row)
+                if track is not None:
+                    tracks.append(track)
+                else:
+                    await s.delete(row)
+            await s.commit()
+            return tracks
 
     async def _db_size(self) -> int:
         async with self._session_factory() as s:
@@ -124,8 +187,18 @@ class Queue:
     # ------------------------------------------------------------------ #
     # public API
     # ------------------------------------------------------------------ #
+    async def _size_unlocked(self) -> int:
+        if self._persisted:
+            return await self._db_size()
+        return len(self._items)
+
+    def _check_capacity(self, current: int) -> None:
+        if self._max_size is not None and current >= self._max_size:
+            raise QueueFullError(self._chat_id or 0, self._max_size)
+
     async def add(self, track: Track) -> int:
         async with self._lock:
+            self._check_capacity(await self._size_unlocked())
             if self._persisted:
                 return await self._db_add(track)
             self._items.append(track)
@@ -133,6 +206,7 @@ class Queue:
 
     async def add_next(self, track: Track) -> int:
         async with self._lock:
+            self._check_capacity(await self._size_unlocked())
             if self._persisted:
                 return await self._db_add(track, front=True)
             self._items.appendleft(track)
@@ -208,3 +282,46 @@ class Queue:
                 await self._db_clear()
                 return
             self._items.clear()
+
+    async def prune_stale(self, max_age_seconds: int) -> int:
+        """Delete persisted entries older than `max_age_seconds`.
+
+        Long-dead rows (stale queue state left over from earlier runs) can
+        poison playback after a restart, so they are stripped on startup.
+        Returns the number of rows deleted. No-op for in-memory queues.
+        """
+        if not self._persisted:
+            return 0
+        async with self._lock:
+            cutoff = datetime.now(UTC) - timedelta(seconds=max_age_seconds)
+            async with self._session_factory() as s:
+                result = await s.execute(
+                    delete(QueueEntry).where(
+                        QueueEntry.chat_id == self._chat_id,
+                        QueueEntry.created_at.isnot(None),
+                        QueueEntry.created_at < cutoff,
+                    )
+                )
+                await s.commit()
+                return result.rowcount or 0
+
+
+async def purge_stale_persisted_entries(session_factory, max_age_seconds: int) -> int:
+    """Drop every persisted queue entry older than ``max_age_seconds``.
+
+    Runs once at startup (before any player is created) so stale rows from
+    earlier runs cannot poison playback after a restart. ``max_age_seconds <= 0``
+    disables it. Returns the number of rows deleted.
+    """
+    if max_age_seconds is None or max_age_seconds <= 0:
+        return 0
+    cutoff = datetime.now(UTC) - timedelta(seconds=max_age_seconds)
+    async with session_factory() as s:
+        result = await s.execute(
+            delete(QueueEntry).where(
+                QueueEntry.created_at.isnot(None),
+                QueueEntry.created_at < cutoff,
+            )
+        )
+        await s.commit()
+        return result.rowcount or 0

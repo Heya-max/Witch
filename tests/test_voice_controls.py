@@ -191,3 +191,71 @@ async def test_leave_stops_engine(monkeypatch):
     assert engine.stopped == 1
     assert 3 not in vm._audio
     assert 3 not in vm._joined
+
+
+class FakeApp:
+    def __init__(self):
+        self.sent = []
+
+    async def send_message(self, chat_id, text):
+        self.sent.append((chat_id, text))
+
+
+class NoVCDeniedPyTgCalls(FakePyTgCalls):
+    """PyTgCalls that refuses to play because the bot can't create a VC."""
+
+    async def play(self, chat_id, stream=None):
+        from pyrogram.errors import BotMethodInvalid
+
+        raise BotMethodInvalid()
+
+
+def _no_vc_vm(monkeypatch):
+    # pytgcalls available, but the bot is denied creating a group call, which
+    # is exactly what py-tgcalls attempts when no voice chat is active.
+    monkeypatch.setattr(voice_mod, "PyTgCalls", NoVCDeniedPyTgCalls)
+    monkeypatch.setattr(voice_mod, "MediaStream", FakeMediaStream)
+    return VoiceManager(FakeApp())
+
+
+@pytest.mark.asyncio
+async def test_play_without_active_voice_chat_raises(monkeypatch):
+    vm = _no_vc_vm(monkeypatch)
+    with pytest.raises(RuntimeError, match="no active voice chat"):
+        await vm.play(123, "http://x/1")
+    # no silent engine fallback that plays to nowhere
+    assert vm._audio == {}
+    # the chat was told what to do
+    assert vm._app.sent and "No voice chat is active" in vm._app.sent[0][1]
+
+
+@pytest.mark.asyncio
+async def test_join_without_active_voice_chat_raises(monkeypatch):
+    vm = _no_vc_vm(monkeypatch)
+    with pytest.raises(RuntimeError, match="no active voice chat"):
+        await vm.join(123)
+    assert 123 not in vm._joined
+
+
+def test_voice_manager_drives_assistant_client(monkeypatch):
+    # When a userbot assistant is configured, PyTgCalls must be bound to that
+    # account (users can create group calls; bots cannot).
+    monkeypatch.setattr(voice_mod, "PyTgCalls", FakePyTgCalls)
+    monkeypatch.setattr(voice_mod, "MediaStream", FakeMediaStream)
+
+    class FakeUserClient:
+        pass
+
+    assistant = FakeUserClient()
+    vm = VoiceManager(None, assistant=assistant)
+    assert vm._voice_app is assistant
+    assert vm._pytgcalls is not None
+    assert vm._pytgcalls.app is assistant
+
+
+def test_voice_manager_uses_bot_client_without_assistant(monkeypatch):
+    monkeypatch.setattr(voice_mod, "PyTgCalls", FakePyTgCalls)
+    monkeypatch.setattr(voice_mod, "MediaStream", FakeMediaStream)
+    vm = VoiceManager(None)
+    assert vm._voice_app is None
+    assert vm._pytgcalls.app is None

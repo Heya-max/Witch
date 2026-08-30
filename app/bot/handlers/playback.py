@@ -6,7 +6,9 @@ from pyrogram.handlers import CallbackQueryHandler, MessageHandler
 from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from ...player.models import Track
+from ...player.queue import QueueFullError
 from ...sources import get_default_providers
+from ...sources.validation import is_http_url, looks_like_audio
 
 logger = logging.getLogger(__name__)
 
@@ -120,9 +122,31 @@ async def leave_handler(client: Client, message: Message) -> None:
         await message.reply_text("❌ Failed to leave the voice chat. Check logs.")
 
 
+async def vc_status_handler(client: Client, message: Message) -> None:
+    """Debug: report who is currently in the group voice chat."""
+    vm = getattr(client, "voice", None)
+    if vm is None:
+        await message.reply_text("❌ Voice support not configured on the bot.")
+        return
+    try:
+        participants = await vm.get_participants(message.chat.id)
+    except Exception:
+        logger.exception("failed to fetch participants")
+        await message.reply_text("❌ Failed to read voice-chat participants.")
+        return
+    lines = [f"🧪 Voice chat participants ({len(participants)}):"]
+    for p in participants:
+        uid = getattr(p, "user_id", None)
+        muted = getattr(p, "muted", None)
+        src = getattr(p, "source", None)
+        lines.append(f"• id={uid} muted={muted} source={src}")
+    await message.reply_text("\n".join(lines) if lines else "📭 No participants.")
+
+
 def register(app: Client) -> None:
     app.add_handler(MessageHandler(join_handler, filters=filters.command("join")))
     app.add_handler(MessageHandler(leave_handler, filters=filters.command("leave")))
+    app.add_handler(MessageHandler(vc_status_handler, filters=filters.command("vc")))
     app.add_handler(MessageHandler(play_handler, filters=filters.command("play")))
     app.add_handler(MessageHandler(playnext_handler, filters=filters.command("playnext")))
     app.add_handler(MessageHandler(stop_handler, filters=filters.command("stop")))
@@ -173,10 +197,43 @@ async def play_handler(client: Client, message: Message) -> None:
 
     await message.reply_text("⏳ Preparing playback...")
 
-    # Resolve track metadata + playable URL via providers
-    chosen_track, playable_url, preferred_provider, search_results = await _resolve_track(client, message, input_source)
-
     pm = getattr(client, "player_manager", None)
+
+    # Expand playlist/album URLs into a batch of tracks before searching.
+    playlist_tracks = await _maybe_playlist(input_source)
+    if playlist_tracks:
+        if pm is None:
+            await message.reply_text("❌ Queue support is required for playlists.")
+            return
+        player = await pm.get_player(chat_id)
+        count = 0
+        try:
+            for t in playlist_tracks:
+                if message.from_user is not None:
+                    t.requested_by = message.from_user.id
+                await player.enqueue(t)
+                count += 1
+        except QueueFullError:
+            logger.info(
+                "playlist enqueue hit queue limit chat=%s enqueued=%s/%s",
+                chat_id,
+                count,
+                len(playlist_tracks),
+            )
+        if count == 1:
+            await message.reply_text(f"✅ Enqueued: {playlist_tracks[0].title}")
+        elif count:
+            await message.reply_text(f"✅ Enqueued {count} of {len(playlist_tracks)} tracks from the playlist.")
+        else:
+            await message.reply_text("❌ The queue is full; nothing was enqueued.")
+        return
+
+    # Resolve track metadata + playable URL via providers
+    try:
+        chosen_track, playable_url, preferred_provider, search_results = await _resolve_track(client, message, input_source)
+    except ValueError as e:
+        await message.reply_text(f"❌ {e}")
+        return
 
     # If multiple search results and a player manager is available, offer a picker
     if await _offer_picker(client, message, chat_id, preferred_provider, search_results):
@@ -217,6 +274,10 @@ async def play_handler(client: Client, message: Message) -> None:
             player = await pm.get_player(chat_id)
             pos = await player.enqueue(chosen_track)
             await message.reply_text(f"✅ Enqueued: {chosen_track.title} (position {pos + 1})")
+    except QueueFullError:
+        await message.reply_text("❌ The queue is full. Clear it with /clear or use /stop.")
+    except ValueError as e:
+        await message.reply_text(f"❌ {e}")
     except Exception:
         await message.reply_text("❌ Failed to start playback. Check logs.")
 
@@ -250,6 +311,15 @@ async def _resolve_track(client: Client, message: Message, input_source: str) ->
             continue
 
     if chosen_track is None:
+        # An http(s) input that no provider could make audio out of is a
+        # website / expired link, not a search query — refuse it instead of
+        # handing the raw URL to the player. Plain text queries still get the
+        # generic passthrough track so the search chain can try them.
+        if is_http_url(input_source) and not looks_like_audio(input_source):
+            raise ValueError(
+                f"That doesn't look like an audio source: {input_source}. "
+                "Try a song title, a YouTube/SoundCloud link, or a direct audio file URL."
+            )
         # fallback: treat input as direct URL or local id
         chosen_track = Track(id=input_source, title=input_source, source="url", source_url=input_source)
         playable_url = input_source
@@ -257,9 +327,27 @@ async def _resolve_track(client: Client, message: Message, input_source: str) ->
     if message.from_user is not None:
         chosen_track.requested_by = message.from_user.id
 
-    # attach resolved playable URL for the immediate-pick path
+    # Keep a stable key (page URL / id) for fresh re-resolution at play time;
+    # `source_url` is then set to the playable link for the immediate-pick path.
+    # Signed playable URLs expire quickly, so the player re-resolves via the key.
+    if chosen_track.resolve_key is None:
+        chosen_track.resolve_key = chosen_track.source_url or chosen_track.id
     chosen_track.source_url = playable_url
     return chosen_track, playable_url, preferred_provider, search_results
+
+
+async def _maybe_playlist(input_source: str) -> list[Track] | None:
+    """Expand a playlist/album URL into tracks; returns None when not applicable."""
+    if not (input_source.startswith("http://") or input_source.startswith("https://")):
+        return None
+    try:
+        from ...sources.providers.yt_dlp_provider import YtDlpProvider
+
+        tracks = await YtDlpProvider().resolve_playlist(input_source)
+    except Exception:
+        logger.debug("input not resolvable as a playlist: %s", input_source, exc_info=True)
+        return None
+    return tracks or None
 
 
 async def _offer_picker(
@@ -270,8 +358,12 @@ async def _offer_picker(
     search_results: list,
     *,
     next_play: bool = False,
+    action: str = "enqueue",
 ) -> bool:
     """Show an inline picker when a search returned multiple results.
+
+    `action` controls what happens when a result is chosen: `enqueue`,
+    `enqueue_next`, or `download`.
 
     Returns True when a picker was shown (the caller should stop handling).
     """
@@ -289,7 +381,7 @@ async def _offer_picker(
         "results": search_results[:MAX_PICK_RESULTS],
         "provider": preferred_provider,
         "requested_by": message.from_user.id if message.from_user is not None else None,
-        "action": "enqueue_next" if next_play else "enqueue",
+        "action": "enqueue_next" if next_play else action,
     }
     def _label(track: Track) -> str:
         title = track.title[:40]
@@ -321,6 +413,17 @@ async def playnext_handler(client: Client, message: Message) -> None:
 
     await message.reply_text("⏳ Preparing...")
     try:
+        playlist_tracks = await _maybe_playlist(input_source)
+        if playlist_tracks:
+            first = playlist_tracks[0]
+            if message.from_user is not None:
+                first.requested_by = message.from_user.id
+            player = await pm.get_player(chat_id)
+            pos = await player.enqueue_next(first)
+            what = f" (position {pos + 1})" if pos is not None else ""
+            await message.reply_text(f"⏭️ Queued to play next: {first.title}{what}")
+            return
+
         chosen_track, _playable_url, preferred_provider, search_results = await _resolve_track(
             client, message, input_source
         )
@@ -331,6 +434,8 @@ async def playnext_handler(client: Client, message: Message) -> None:
         pos = await player.enqueue_next(chosen_track)
         what = f" (position {pos + 1})" if pos is not None else ""
         await message.reply_text(f"⏭️ Queued to play next: {chosen_track.title}{what}")
+    except (ValueError, QueueFullError) as e:
+        await message.reply_text(f"❌ {e}")
     except Exception:
         logger.exception("failed to queue next track")
         await message.reply_text("❌ Failed to queue track. Check logs.")
@@ -374,6 +479,9 @@ async def inline_callback(client: Client, query: CallbackQuery) -> None:
             await pick_callback(client, query)
         elif data.startswith("qpage:"):
             await queue_page_callback(client, query)
+        elif data.startswith("fav:"):
+            # handled by the favorites module's dedicated callback handler
+            return
         else:
             await query.answer()
     except Exception:
@@ -418,8 +526,15 @@ async def pick_callback(client: Client, query: CallbackQuery) -> None:
     track = results[idx]
     if entry.get("requested_by") is not None:
         track.requested_by = entry["requested_by"]
+
+    if entry.get("action") == "download":
+        await _download_picked(client, query, chat_id, track)
+        return
+
     try:
         playable = await provider.resolve_audio(track.id if track.source is None else (track.source_url or track.id))
+        if track.resolve_key is None:
+            track.resolve_key = track.source_url or track.id
         track.source_url = playable
     except Exception:
         await query.answer("Could not resolve audio for this track.", show_alert=True)
@@ -441,9 +556,26 @@ async def pick_callback(client: Client, query: CallbackQuery) -> None:
         if query.message is not None:
             await query.message.edit_text(label)
         await query.answer()
+    except (QueueFullError, ValueError) as e:
+        await query.answer(str(e), show_alert=True)
     except Exception:
         logger.exception("failed to enqueue picked track")
         await query.answer("Failed to start playback. Check logs.", show_alert=True)
+
+
+async def _download_picked(client: Client, query: CallbackQuery, chat_id: int, track: Track) -> None:
+    """Download the picked track as an audio message (lazy media import)."""
+    from .media import deliver_audio
+
+    if query.message is not None:
+        await query.message.edit_text(f"⬇️ Downloading: {track.title}")
+    await query.answer()
+    try:
+        await deliver_audio(client, chat_id, track)
+    except Exception:
+        logger.exception("failed to download picked track")
+        if query.message is not None:
+            await query.message.edit_text("❌ Download failed. Check logs.")
 
 
 async def queue_page_callback(client: Client, query: CallbackQuery) -> None:

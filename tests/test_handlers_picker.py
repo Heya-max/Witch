@@ -149,6 +149,48 @@ async def test_picker_buttons_show_duration():
 
 
 @pytest.mark.asyncio
+async def test_offer_picker_stores_download_action():
+    from app.bot.handlers.playback import _offer_picker
+    from app.player.models import Track
+
+    tracks = [Track(id="1", title="One"), Track(id="2", title="Two")]
+    provider = FakeProvider(tracks)
+    client = type("C", (), {"player_manager": object()})
+    msg = FakeMessage(chat_id=1, user_id=7)
+    shown = await _offer_picker(client, msg, 1, provider, tracks, action="download")
+    assert shown
+    entry = list(client.pending_picks.values())[0]
+    assert entry["action"] == "download"
+
+
+@pytest.mark.asyncio
+async def test_pick_callback_download_delivers_audio(monkeypatch):
+    import app.bot.handlers.media as media_mod
+    from app.bot.handlers.playback import _offer_picker, inline_callback
+    from app.player.models import Track
+
+    delivered = []
+
+    async def _fake_deliver_audio(client, chat_id, track):
+        delivered.append((chat_id, track.title))
+
+    monkeypatch.setattr(media_mod, "deliver_audio", _fake_deliver_audio)
+
+    tracks = [Track(id="1", title="One"), Track(id="2", title="Two")]
+    provider = FakeProvider(tracks)
+    client = type("C", (), {"player_manager": object(), "pending_picks": {}})
+    msg = FakeMessage(chat_id=1, user_id=7, text="/download query")
+    await _offer_picker(client, msg, 1, provider, tracks, action="download")
+    nonce = list(client.pending_picks)[0]
+    message = FakeEditedMessage(chat_id=1)
+    query = FakeQuery(f"pick:{nonce}:1", chat_id=1, message=message, user_id=7)
+    await inline_callback(client, query)
+    assert delivered == [(1, "Two")]
+    assert message.edited and "Downloading" in message.edited
+    assert client.pending_picks.get(nonce) is None
+
+
+@pytest.mark.asyncio
 async def test_play_handler_auto_enqueues_single_result():
     from app.bot.handlers.playback import play_handler
     from app.player.models import Track

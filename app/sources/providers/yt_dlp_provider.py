@@ -57,6 +57,40 @@ class YtDlpProvider(MusicSource):
             )
         return results
 
+    async def resolve_playlist(self, url: str) -> list[Track]:
+        """Resolve a playlist/album URL into Track objects.
+
+        Returns a single-element list when the URL is a plain track. Raises
+        when the URL cannot be extracted.
+        """
+        with YoutubeDL(self.ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+        if info is None:
+            raise RuntimeError("yt-dlp returned no info")
+
+        entries = (info.get("entries") or []) if info.get("_type") == "playlist" else [info]
+
+        results: list[Track] = []
+        for item in entries:
+            if not item or item.get("_type") == "playlist":
+                continue
+            results.append(
+                Track(
+                    id=item.get("id") or item.get("webpage_url"),
+                    title=item.get("title") or "Unknown",
+                    artist=item.get("artist") or item.get("uploader"),
+                    album=item.get("album"),
+                    duration=item.get("duration"),
+                    thumbnail=item.get("thumbnail"),
+                    source="yt-dlp",
+                    source_id=item.get("id"),
+                    source_url=item.get("webpage_url") or item.get("url"),
+                    metadata=item,
+                )
+            )
+        return results
+
     async def get_metadata(self, source_id: str) -> Track:
         url = source_id
         # if source_id looks like an id, construct a youtube url

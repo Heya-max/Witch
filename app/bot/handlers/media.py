@@ -12,7 +12,7 @@ from pyrogram.handlers import MessageHandler
 
 from ...player.models import Track
 from ...sources.providers.yt_dlp_provider import YtDlpProvider
-from .playback import _resolve_track
+from .playback import _offer_picker, _resolve_track
 
 logger = logging.getLogger(__name__)
 
@@ -166,9 +166,13 @@ async def download_handler(client: Client, message) -> None:
 
     await message.reply_text("⏳ Resolving track...")
     try:
-        chosen_track, _playable_url, _preferred, search_results = await _resolve_track(
+        chosen_track, _playable_url, preferred_provider, search_results = await _resolve_track(
             client, message, input_source
         )
+        if await _offer_picker(
+            client, message, chat_id, preferred_provider, search_results, action="download"
+        ):
+            return
         track = search_results[0] if search_results else chosen_track
         if message.from_user is not None:
             track.requested_by = message.from_user.id
@@ -176,6 +180,8 @@ async def download_handler(client: Client, message) -> None:
         await message.reply_text("⏳ Downloading audio...")
         await deliver_audio(client, chat_id, track)
         await message.reply_text("⬇️ Download sent.")
+    except ValueError as e:
+        await message.reply_text(f"❌ {e}")
     except Exception:
         logger.exception("download failed for chat=%s source=%s", chat_id, input_source)
         await message.reply_text("❌ Download failed. Check logs.")

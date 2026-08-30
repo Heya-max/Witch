@@ -14,9 +14,21 @@ except Exception:  # pragma: no cover - optional dependency
     MediaStream = None
     StreamEnded = None
 
+try:
+    from pytgcalls.exceptions import NoActiveGroupCall
+except Exception:  # pragma: no cover - optional dependency
+    NoActiveGroupCall = ()
+
+from pyrogram.errors import BotMethodInvalid
+
 from .audio_engine import AudioEngine
 
 logger = logging.getLogger(__name__)
+
+# A bot account cannot create group calls (phone.createGroupCall is forbidden),
+# so playback/join depends on a user having an active voice chat in the group.
+NO_ACTIVE_VOICE_CHAT_REASON = "no active voice chat to stream into"
+NO_ACTIVE_VOICE_CHAT_MSG = "❌ No voice chat is active in this chat. Start the group's voice chat, then try again."
 
 # py-tgcalls imports `GroupcallForbidden`/`GroupcallInvalid` from pyrogram.errors,
 # but modern Pyrogram releases no longer define them. Add safe aliases so PyTgCalls
@@ -37,12 +49,16 @@ class VoiceManager:
     - Otherwise, use a per-chat `AudioEngine` to spawn FFmpeg locally.
     """
 
-    def __init__(self, app: Client) -> None:
+    def __init__(self, app: Client, assistant: Client | None = None) -> None:
         self._app = app
+        # Playback rides on the assistant (user account, can create group
+        # calls) when one is configured; otherwise the bot account is used and
+        # a user must start the voice chat first.
+        self._voice_app = assistant if assistant is not None else app
         self._pytgcalls = None
         if PyTgCalls is not None:
             try:
-                self._pytgcalls = PyTgCalls(app)
+                self._pytgcalls = PyTgCalls(self._voice_app)
             except Exception:
                 # An invalid/None MTProto client may fail to initialize; keep
                 # voice disabled in that case (e.g. some test setups).
@@ -95,6 +111,15 @@ class VoiceManager:
                 logger.exception("failed to stop audio engine for chat %s", chat_id)
         self._audio.clear()
 
+    async def _notify(self, chat_id: int, text: str) -> None:
+        """Best-effort message into a chat (used to surface playback errors)."""
+        try:
+            app = getattr(self, "_app", None)
+            if app is not None and hasattr(app, "send_message"):
+                await app.send_message(chat_id, text)
+        except Exception:
+            logger.debug("failed to notify chat %s", chat_id, exc_info=True)
+
     async def join(self, chat_id: int) -> None:
         if self._pytgcalls is None:
             raise RuntimeError("Voice support not installed (pytgcalls missing)")
@@ -108,6 +133,14 @@ class VoiceManager:
             await self._pytgcalls.play(chat_id)
             self._joined.add(chat_id)
             logger.info("joined voice chat %s", chat_id)
+        except NoActiveGroupCall:
+            await self._notify(chat_id, NO_ACTIVE_VOICE_CHAT_MSG)
+            raise RuntimeError("no active voice chat to join") from None
+        except BotMethodInvalid:
+            # auto_start tried to create the call, but bots may not create
+            # group calls; require a user already in the voice chat.
+            await self._notify(chat_id, NO_ACTIVE_VOICE_CHAT_MSG)
+            raise RuntimeError("no active voice chat to join") from None
         except Exception as e:
             logger.exception("failed to join voice chat %s: %s", chat_id, e)
             raise
@@ -131,6 +164,16 @@ class VoiceManager:
             await self._stop_engine(chat_id)
             self._joined.discard(chat_id)
             logger.info("left voice chat %s", chat_id)
+
+    async def get_participants(self, chat_id: int) -> list:
+        """Return the current voice-chat participants (best-effort)."""
+        if self._pytgcalls is None:
+            return []
+        try:
+            return await self._pytgcalls.get_participants(chat_id)
+        except Exception:
+            logger.debug("get_participants failed for chat %s", chat_id, exc_info=True)
+            return []
 
     async def _stop_engine(self, chat_id: int) -> None:
         """Stop and drop the per-chat audio engine (if any), freeing its process."""
@@ -162,6 +205,12 @@ class VoiceManager:
                 self._joined.add(chat_id)
                 logger.info("playing %s in chat %s via MediaStream", input_source, chat_id)
                 return {"mode": "pytgcalls"}
+            except NoActiveGroupCall:
+                await self._notify(chat_id, NO_ACTIVE_VOICE_CHAT_MSG)
+                raise RuntimeError(NO_ACTIVE_VOICE_CHAT_REASON) from None
+            except BotMethodInvalid:
+                await self._notify(chat_id, NO_ACTIVE_VOICE_CHAT_MSG)
+                raise RuntimeError(NO_ACTIVE_VOICE_CHAT_REASON) from None
             except Exception:
                 logger.exception("MediaStream playback failed; falling back to AudioEngine")
 
@@ -189,6 +238,12 @@ class VoiceManager:
                 self._joined.add(chat_id)
                 logger.info("volume set for %s in chat %s via MediaStream", volume, chat_id)
                 return {"mode": "pytgcalls"}
+            except NoActiveGroupCall:
+                await self._notify(chat_id, NO_ACTIVE_VOICE_CHAT_MSG)
+                raise RuntimeError(NO_ACTIVE_VOICE_CHAT_REASON) from None
+            except BotMethodInvalid:
+                await self._notify(chat_id, NO_ACTIVE_VOICE_CHAT_MSG)
+                raise RuntimeError(NO_ACTIVE_VOICE_CHAT_REASON) from None
             except Exception:
                 logger.exception("MediaStream volume change failed; falling back to AudioEngine")
 

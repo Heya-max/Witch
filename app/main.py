@@ -4,6 +4,7 @@ import logging
 
 from pyrogram import idle
 
+from .bot.assistant import create_assistant_client
 from .bot.client import create_bot_client
 from .bot.handlers import register_handlers
 from .config import get_settings
@@ -38,7 +39,10 @@ def _init_services(app, settings) -> None:
 
                 prom_counter = Counter("app_events_total", "Application event counters", ["name"])
                 set_prometheus_counter(prom_counter)
-                start_http_server(settings.METRICS_PORT, addr="127.0.0.1")
+                # Bind on 0.0.0.0 so the endpoint is reachable inside Docker
+                # (Prometheus-style scrapers); the compose file publishes it.
+                start_http_server(settings.METRICS_PORT, addr="0.0.0.0")
+                logger.info("prometheus metrics listening on :%s", settings.METRICS_PORT)
             except Exception:
                 logger.warning("prometheus metrics server failed to start", exc_info=True)
     except Exception:
@@ -53,6 +57,10 @@ def _init_services(app, settings) -> None:
         app.db_session_factory = session_factory
     except Exception:
         logger.warning("could not initialise database; queue will be in-memory", exc_info=True)
+
+    assistant = create_assistant_client(settings)
+    if assistant is not None:
+        app.assistant = assistant
 
 
 async def _db_is_ready(app, settings) -> bool:
@@ -80,19 +88,45 @@ async def _db_is_ready(app, settings) -> bool:
 def _init_voice(app, session_factory=None) -> None:
     """Attach VoiceManager/PlayerManager to the client (best-effort)."""
     try:
+        from .player.manager import PlayerManager
         from .player.voice import VoiceManager
+        from .sources import resolve_playable
 
-        voice = VoiceManager(app)
+        assistant = getattr(app, "assistant", None)
+        voice = VoiceManager(app, assistant=assistant)
         app.voice = voice
 
-        from .player.manager import PlayerManager
-
-        app.player_manager = PlayerManager(voice, session_factory=session_factory)
+        settings = getattr(app, "settings", None)
+        max_queue_size = getattr(settings, "QUEUE_MAX_SIZE", 200)
+        max_retries = getattr(settings, "PLAY_MAX_RETRIES", 2)
+        app.player_manager = PlayerManager(
+            voice,
+            session_factory=session_factory,
+            resolver=resolve_playable,
+            max_queue_size=max_queue_size,
+            max_retries=max_retries,
+        )
     except Exception:
         logger.warning(
             "could not initialize VoiceManager; voice commands will be disabled",
             exc_info=True,
         )
+
+
+async def _prune_stale_queues(app, settings) -> None:
+    """Drop persisted queue rows older than the startup TTL (best-effort)."""
+    session_factory = getattr(app, "db_session_factory", None)
+    ttl = getattr(settings, "QUEUE_MAX_AGE_SECONDS", 86400)
+    if session_factory is None or not ttl:
+        return
+    try:
+        from .player.queue import purge_stale_persisted_entries
+
+        removed = await purge_stale_persisted_entries(session_factory, ttl)
+        if removed:
+            logger.info("pruned %s stale queue entries older than %ss", removed, ttl)
+    except Exception:
+        logger.warning("queue pruning failed (continuing with best-effort cleanup)", exc_info=True)
 
 
 async def _run_bot(app, settings) -> None:
@@ -103,9 +137,25 @@ async def _run_bot(app, settings) -> None:
         session_factory = getattr(app, "db_session_factory", None)
     else:
         logger.warning("database tables not found; run `alembic upgrade head`. Falling back to in-memory queues.")
-    _init_voice(app, session_factory)
+
+    # Clear stale queue state from earlier runs before any player is created.
+    await _prune_stale_queues(app, settings)
 
     await app.start()
+
+    # Start the optional userbot assistant before the voice manager so its
+    # PyTgCalls instance is bound to a running client. If it fails, fall back
+    # to bot-account voice (manual VC start required).
+    assistant = getattr(app, "assistant", None)
+    if assistant is not None:
+        try:
+            await assistant.start()
+            logger.info("userbot assistant started")
+        except Exception:
+            logger.warning("failed to start userbot assistant; voice will use the bot account", exc_info=True)
+            app.assistant = None
+
+    _init_voice(app, session_factory)
 
     # Start the voice manager (PyTgCalls) only after the client is up.
     try:
@@ -118,17 +168,35 @@ async def _run_bot(app, settings) -> None:
             exc_info=True,
         )
 
-    # Block until interrupted, processing updates.
-    await idle()
-
+    # Block until interrupted, processing updates. Wrap teardown in
+    # try/finally so the player's background tasks and voice stream are torn
+    # down cleanly even if idle() raises.
     try:
-        voice = getattr(app, "voice", None)
-        if voice is not None:
-            await voice.stop()
-    except Exception:
-        logger.warning("error stopping voice manager", exc_info=True)
+        await idle()
+    finally:
+        # Cancel per-chat playback tasks and clear in-memory queues first so
+        # nothing spins after the clients stop.
+        player_manager = getattr(app, "player_manager", None)
+        if player_manager is not None:
+            try:
+                await player_manager.shutdown()
+            except Exception:
+                logger.warning("error shutting down players", exc_info=True)
 
-    await app.stop()
+        try:
+            voice = getattr(app, "voice", None)
+            if voice is not None:
+                await voice.stop()
+        except Exception:
+            logger.warning("error stopping voice manager", exc_info=True)
+
+        if assistant is not None:
+            try:
+                await assistant.stop()
+            except Exception:
+                logger.warning("error stopping userbot assistant", exc_info=True)
+
+        await app.stop()
 
 
 def main() -> int:
