@@ -36,7 +36,7 @@ def _fav_buttons(n: int) -> InlineKeyboardMarkup:
 async def _render_favs(client: Client, message: Message, user_id: int) -> None:
     session_factory = _session_factory(client)
     if session_factory is None:
-        await message.reply_text("❌ Database is unavailable; favorites need the Postgres service.")
+        await message.reply_text("❌ Favorites service is temporarily unavailable. Please try again later.")
         return
     tracks = await list_favorites(session_factory, user_id)
     if not tracks:
@@ -57,7 +57,7 @@ async def fav_handler(client: Client, message: Message) -> None:
         return
     session_factory = _session_factory(client)
     if session_factory is None:
-        await message.reply_text("❌ Database is unavailable; favorites need the Postgres service.")
+        await message.reply_text("❌ Favorites service is temporarily unavailable. Please try again later.")
         return
 
     input_source = parts[1].strip()
@@ -77,7 +77,7 @@ async def fav_handler(client: Client, message: Message) -> None:
         await message.reply_text(f"❌ {e}")
     except Exception:
         logger.exception("failed to save favorite for user=%s", message.from_user.id)
-        await message.reply_text("❌ Could not save favorite. Check logs.")
+        await message.reply_text("❌ Could not save favorite. Try again later.")
 
 
 async def favs_handler(client: Client, message: Message) -> None:
@@ -97,7 +97,7 @@ async def unfav_handler(client: Client, message: Message) -> None:
         return
     session_factory = _session_factory(client)
     if session_factory is None:
-        await message.reply_text("❌ Database is unavailable; favorites need the Postgres service.")
+        await message.reply_text("❌ Favorites service is temporarily unavailable. Please try again later.")
         return
 
     try:
@@ -180,7 +180,7 @@ async def fav_callback(client: Client, query: CallbackQuery) -> None:
             await query.answer()
         except Exception:
             logger.exception("failed to enqueue favorite")
-            await query.answer("Failed to start playback. Check logs.", show_alert=True)
+            await query.answer("Failed to start playback. Try again later.", show_alert=True)
         return
 
     await query.answer()

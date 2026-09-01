@@ -83,6 +83,7 @@ async def test_playback_failure_requeues_track_for_retry():
     await player.stop()
 
 
+@pytest.mark.asyncio
 async def test_player_advance_on_engine_finish():
     voice = FakeVoice()
     mgr = PlayerManager(voice)

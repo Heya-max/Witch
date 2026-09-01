@@ -79,7 +79,7 @@ async def join_handler(client: Client, message: Message) -> None:
                     if metrics is not None:
                         metrics.inc("locks.release_exception.join")
     except Exception:
-        await message.reply_text("❌ Failed to join the voice chat. Check logs.")
+        await message.reply_text("❌ Failed to join the voice chat. Try again in a moment.")
 
 
 async def leave_handler(client: Client, message: Message) -> None:
@@ -120,7 +120,7 @@ async def leave_handler(client: Client, message: Message) -> None:
                     if metrics is not None:
                         metrics.inc("locks.release_exception.leave")
     except Exception:
-        await message.reply_text("❌ Failed to leave the voice chat. Check logs.")
+        await message.reply_text("❌ Failed to leave the voice chat. Try again in a moment.")
 
 
 async def vc_status_handler(client: Client, message: Message) -> None:
@@ -280,8 +280,7 @@ async def play_handler(client: Client, message: Message) -> None:
     except ValueError as e:
         await message.reply_text(f"❌ {e}")
     except Exception:
-        await message.reply_text("❌ Failed to start playback. Check logs.")
-
+        await message.reply_text("❌ Failed to start playback. Try again.")
 
 async def _resolve_track(client: Client, message: Message, input_source: str) -> tuple:
     """Search providers for `input_source` and return a resolvable track + playable URL.
@@ -439,7 +438,7 @@ async def playnext_handler(client: Client, message: Message) -> None:
         await message.reply_text(f"❌ {e}")
     except Exception:
         logger.exception("failed to queue next track")
-        await message.reply_text("❌ Failed to queue track. Check logs.")
+        await message.reply_text("❌ Failed to queue track. Try again later.")
 
 
 def _format_queue(items, page: int, page_size: int = QUEUE_PAGE_SIZE) -> tuple[str, InlineKeyboardMarkup | None]:
@@ -579,7 +578,7 @@ async def pick_callback(client: Client, query: CallbackQuery) -> None:
         await query.answer(str(e), show_alert=True)
     except Exception:
         logger.exception("failed to enqueue picked track")
-        await query.answer("Failed to start playback. Check logs.", show_alert=True)
+        await query.answer("Failed to start playback. Try again later.", show_alert=True)
 
 
 async def _download_picked(client: Client, query: CallbackQuery, chat_id: int, track: Track) -> None:
@@ -594,7 +593,7 @@ async def _download_picked(client: Client, query: CallbackQuery, chat_id: int, t
     except Exception:
         logger.exception("failed to download picked track")
         if query.message is not None:
-            await query.message.edit_text("❌ Download failed. Check logs.")
+            await query.message.edit_text("❌ Download failed. Try again later.")
 
 
 async def queue_page_callback(client: Client, query: CallbackQuery) -> None:
@@ -625,7 +624,7 @@ async def queue_page_callback(client: Client, query: CallbackQuery) -> None:
         await query.answer()
     except Exception:
         logger.exception("queue page callback failed")
-        await query.answer("Could not fetch queue. Check logs.", show_alert=True)
+        await query.answer("Could not fetch queue. Try again later.", show_alert=True)
 
 
 async def queue_handler(client: Client, message: Message) -> None:
@@ -648,14 +647,14 @@ async def queue_handler(client: Client, message: Message) -> None:
         else:
             await message.reply_text(text)
     except Exception:
-        await message.reply_text("❌ Could not fetch queue. Check logs.")
+        await message.reply_text("❌ Could not fetch queue. Try again later.")
 
 
 async def now_playing_handler(client: Client, message: Message) -> None:
     chat_id = message.chat.id
     pm = getattr(client, "player_manager", None)
     if pm is None:
-        await message.reply_text("❌ Now-playing support not configured on the bot.")
+        await message.reply_text("❌ Now-playing info is not available. Try again later.")
         return
 
     try:
@@ -676,7 +675,7 @@ async def now_playing_handler(client: Client, message: Message) -> None:
                 logger.debug("could not send now-playing thumbnail", exc_info=True)
         await message.reply_text(f"▶️ **Now playing:** {cur.title}{artist}{album}{dur}{who}")
     except Exception:
-        await message.reply_text("❌ Could not fetch now-playing. Check logs.")
+        await message.reply_text("❌ Could not fetch now-playing. Try again later.")
 
 
 async def _admin_guard(client: Client, message: Message) -> bool:
@@ -684,7 +683,7 @@ async def _admin_guard(client: Client, message: Message) -> bool:
     try:
         allowed = message.from_user is not None and await _is_privileged(client, message)
     except Exception:
-        await message.reply_text("❌ Permission check failed; action denied.")
+        await message.reply_text("❌ Permission check failed. Action denied.")
         return False
     if not allowed:
         await message.reply_text("❌ You don't have permission for this action.")
@@ -716,7 +715,7 @@ async def remove_handler(client: Client, message: Message) -> None:
             await message.reply_text(f"🗑️ Removed: {removed.title}")
     except Exception:
         logger.exception("failed to remove track")
-        await message.reply_text("❌ Failed to remove track. Check logs.")
+        await message.reply_text("❌ Failed to remove track. Try again later.")
 
 
 async def move_handler(client: Client, message: Message) -> None:
@@ -741,7 +740,7 @@ async def move_handler(client: Client, message: Message) -> None:
         await message.reply_text("✅ Moved track." if ok else "❌ Invalid position.")
     except Exception:
         logger.exception("failed to move track")
-        await message.reply_text("❌ Failed to move track. Check logs.")
+        await message.reply_text("❌ Failed to move track. Try again later.")
 
 
 async def shuffle_handler(client: Client, message: Message) -> None:
@@ -760,7 +759,7 @@ async def shuffle_handler(client: Client, message: Message) -> None:
         await message.reply_text("🔀 Queue shuffled.")
     except Exception:
         logger.exception("failed to shuffle queue")
-        await message.reply_text("❌ Failed to shuffle the queue. Check logs.")
+        await message.reply_text("❌ Failed to shuffle the queue. Try again later.")
 
 
 async def pause_handler(client: Client, message: Message) -> None:
@@ -783,7 +782,7 @@ async def pause_handler(client: Client, message: Message) -> None:
         await message.reply_text("❌ Pause/resume is only supported on Linux (POSIX signals).")
     except Exception:
         logger.exception("failed to pause playback")
-        await message.reply_text("❌ Failed to pause. Check logs.")
+        await message.reply_text("❌ Failed to pause. Try again later.")
 
 
 async def resume_handler(client: Client, message: Message) -> None:
@@ -804,7 +803,7 @@ async def resume_handler(client: Client, message: Message) -> None:
         await message.reply_text("❌ Playback is not paused.")
     except Exception:
         logger.exception("failed to resume playback")
-        await message.reply_text("❌ Failed to resume. Check logs.")
+        await message.reply_text("❌ Failed to resume. Try again later.")
 
 
 async def volume_handler(client: Client, message: Message) -> None:
@@ -835,7 +834,7 @@ async def volume_handler(client: Client, message: Message) -> None:
             await message.reply_text(f"🔊 Volume stored as {pct}%. Nothing is currently playing.")
     except Exception:
         logger.exception("failed to set volume")
-        await message.reply_text("❌ Failed to set volume. Check logs.")
+        await message.reply_text("❌ Failed to set volume. Try again later.")
 
 
 def _fmt_duration(seconds) -> str:
@@ -871,7 +870,7 @@ async def stop_handler(client: Client, message: Message) -> None:
             await vm.stop_playback(chat_id)
             await message.reply_text("✅ Stopped playback.")
         except Exception:
-            await message.reply_text("❌ Failed to stop playback. Check logs.")
+            await message.reply_text("❌ Failed to stop playback. Try again in a moment.")
         return
 
     try:
@@ -879,7 +878,7 @@ async def stop_handler(client: Client, message: Message) -> None:
         await player.stop()
         await message.reply_text("✅ Stopped playback and cleared queue.")
     except Exception:
-        await message.reply_text("❌ Failed to stop playback. Check logs.")
+        await message.reply_text("❌ Failed to stop playback. Try again later.")
 
 
 async def skip_handler(client: Client, message: Message) -> None:
@@ -887,7 +886,7 @@ async def skip_handler(client: Client, message: Message) -> None:
     chat_id = message.chat.id
     pm = getattr(client, "player_manager", None)
     if pm is None:
-        await message.reply_text("❌ Skip not supported without PlayerManager.")
+        await message.reply_text("❌ Queue support is required to skip tracks.")
         return
 
     try:
@@ -906,16 +905,16 @@ async def skip_handler(client: Client, message: Message) -> None:
             await player.skip()
             await message.reply_text("⏭️ Skipped current track.")
         else:
-            await message.reply_text("❌ Skip not implemented for this player.")
+            await message.reply_text("❌ Skip functionality is not available.")
     except Exception:
-        await message.reply_text("❌ Failed to skip. Check logs.")
+        await message.reply_text("❌ Failed to skip. Try again later.")
 
 
 async def clear_handler(client: Client, message: Message) -> None:
     chat_id = message.chat.id
     pm = getattr(client, "player_manager", None)
     if pm is None:
-        await message.reply_text("❌ Clear not supported without PlayerManager.")
+        await message.reply_text("❌ Queue support is required to clear.")
         return
 
     try:
@@ -939,6 +938,6 @@ async def clear_handler(client: Client, message: Message) -> None:
                 await player.stop()
                 await message.reply_text("🧹 Cleared the queue (stop fallback).")
             else:
-                await message.reply_text("❌ Clear not implemented for this player.")
+                await message.reply_text("❌ Clear functionality is not available.")
     except Exception:
-        await message.reply_text("❌ Failed to clear queue. Check logs.")
+        await message.reply_text("❌ Failed to clear queue. Try again later.")

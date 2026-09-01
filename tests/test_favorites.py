@@ -150,7 +150,7 @@ async def test_fav_needs_session_factory():
     client = type("C", (), {})
     msg = FakeMessage(chat_id=1, user_id=7, text="/fav some song")
     await fav_handler(client, msg)
-    assert any("Database is unavailable" in r for r in msg.replies)
+    assert any("Favorites service is temporarily unavailable" in r for r in msg.replies)
 
 
 @pytest.mark.asyncio

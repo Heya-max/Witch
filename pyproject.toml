@@ -1,7 +1,7 @@
 [project]
 name = "telegram-music-bot"
 version = "0.1.0"
-description = "Telegram Voice Chat Music Player - Phase 1 skeleton"
+description = "Telegram Voice Chat Music Player - Search, stream, and manage music in voice chats"
 requires-python = ">=3.11"
 
 [project.dependencies]

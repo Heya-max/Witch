@@ -184,7 +184,7 @@ async def download_handler(client: Client, message) -> None:
         await message.reply_text(f"❌ {e}")
     except Exception:
         logger.exception("download failed for chat=%s source=%s", chat_id, input_source)
-        await message.reply_text("❌ Download failed. Check logs.")
+        await message.reply_text("❌ Download failed. Try again later.")
 
 
 def register(app: Client) -> None:

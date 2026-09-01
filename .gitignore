@@ -14,3 +14,8 @@ dist/
 *.session
 *.session-journal
 .DS_Store
+
+.coverage
+.coverage.*
+htmlcov/
+
