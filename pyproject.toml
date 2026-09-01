@@ -54,6 +54,7 @@ exclude = ["alembic/"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+asyncio_mode = "auto"
 markers = [
     "integration: tests that require external services (e.g. Docker/Redis)",
 ]
