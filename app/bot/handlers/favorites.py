@@ -63,9 +63,7 @@ async def fav_handler(client: Client, message: Message) -> None:
     input_source = parts[1].strip()
     await message.reply_text("⏳ Resolving track...")
     try:
-        chosen_track, _playable_url, _preferred, search_results = await _resolve_track(
-            client, message, input_source
-        )
+        chosen_track, _playable_url, _preferred, search_results = await _resolve_track(client, message, input_source)
         track = search_results[0] if search_results else chosen_track
         track.requested_by = message.from_user.id
         added = await add_favorite(session_factory, message.from_user.id, track)
@@ -123,7 +121,7 @@ async def _resolve_fav_playable(track) -> str | None:
 
 
 async def fav_callback(client: Client, query: CallbackQuery) -> None:
-    data = (query.data or b"")
+    data = query.data or b""
     if isinstance(data, bytes):
         data = data.decode("utf-8", errors="replace")
     try:

@@ -167,11 +167,9 @@ async def test_player_enqueue_gate_rejects_website_url():
     from app.player.manager import PlayerManager
     from app.player.models import Track
 
-
     class FakeEngine:
         async def wait_finished(self):
             return None
-
 
     class FakeVoice:
         async def play(self, chat_id, input_source, volume=1.0):
@@ -179,7 +177,6 @@ async def test_player_enqueue_gate_rejects_website_url():
 
         async def stop_playback(self, chat_id):
             return
-
 
     mgr = PlayerManager(FakeVoice(), resolver=None)
     player = await mgr.get_player(1)

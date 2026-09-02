@@ -169,9 +169,7 @@ async def download_handler(client: Client, message) -> None:
         chosen_track, _playable_url, preferred_provider, search_results = await _resolve_track(
             client, message, input_source
         )
-        if await _offer_picker(
-            client, message, chat_id, preferred_provider, search_results, action="download"
-        ):
+        if await _offer_picker(client, message, chat_id, preferred_provider, search_results, action="download"):
             return
         track = search_results[0] if search_results else chosen_track
         if message.from_user is not None:

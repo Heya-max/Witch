@@ -31,9 +31,7 @@ class FakeClient:
 
 def test_assistant_session_file(monkeypatch):
     monkeypatch.setattr(assistant_mod, "Client", FakeClient)
-    client = create_assistant_client(
-        _settings(USERBOT_SESSION="user", USERBOT_API_ID=123, USERBOT_API_HASH="hh")
-    )
+    client = create_assistant_client(_settings(USERBOT_SESSION="user", USERBOT_API_ID=123, USERBOT_API_HASH="hh"))
     assert client is not None
     assert client.name == "user"
     assert client.kwargs["api_id"] == 123
@@ -42,9 +40,7 @@ def test_assistant_session_file(monkeypatch):
 
 def test_assistant_session_string_falls_back_to_api_credentials(monkeypatch):
     monkeypatch.setattr(assistant_mod, "Client", FakeClient)
-    client = create_assistant_client(
-        _settings(USERBOT_SESSION_STRING="abc", API_ID=42, API_HASH="bot-hash")
-    )
+    client = create_assistant_client(_settings(USERBOT_SESSION_STRING="abc", API_ID=42, API_HASH="bot-hash"))
     assert client is not None
     assert client.kwargs["session_string"] == "abc"
     assert client.kwargs["api_id"] == 42
@@ -53,9 +49,4 @@ def test_assistant_session_string_falls_back_to_api_credentials(monkeypatch):
 
 def test_assistant_needs_api_credentials(monkeypatch):
     monkeypatch.setattr(assistant_mod, "Client", FakeClient)
-    assert (
-        create_assistant_client(
-            _settings(USERBOT_SESSION="user", API_ID=None, API_HASH=None)
-        )
-        is None
-    )
+    assert create_assistant_client(_settings(USERBOT_SESSION="user", API_ID=None, API_HASH=None)) is None

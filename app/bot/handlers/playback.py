@@ -231,7 +231,9 @@ async def play_handler(client: Client, message: Message) -> None:
 
     # Resolve track metadata + playable URL via providers
     try:
-        chosen_track, playable_url, preferred_provider, search_results = await _resolve_track(client, message, input_source)
+        chosen_track, playable_url, preferred_provider, search_results = await _resolve_track(
+            client, message, input_source
+        )
     except ValueError as e:
         await message.reply_text(f"❌ {e}")
         return
@@ -281,6 +283,7 @@ async def play_handler(client: Client, message: Message) -> None:
         await message.reply_text(f"❌ {e}")
     except Exception:
         await message.reply_text("❌ Failed to start playback. Try again.")
+
 
 async def _resolve_track(client: Client, message: Message, input_source: str) -> tuple:
     """Search providers for `input_source` and return a resolvable track + playable URL.
@@ -383,6 +386,7 @@ async def _offer_picker(
         "requested_by": message.from_user.id if message.from_user is not None else None,
         "action": "enqueue_next" if next_play else action,
     }
+
     def _label(track: Track) -> str:
         title = track.title[:40]
         if track.duration:

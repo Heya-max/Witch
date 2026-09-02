@@ -293,12 +293,11 @@ async def test_manager_shutdown_cleans_every_chat():
 def test_player_exposes_track_validation_for_source_urls():
     player = Player(1, FakeVoice())
     # direct source URLs that don't look like audio are rejected at the door
-    assert player._validate_track(
-        Track(id="ok", title="ok", source="url", source_url="https://cdn.example/song.mp3")
-    ) is None
+    assert (
+        player._validate_track(Track(id="ok", title="ok", source="url", source_url="https://cdn.example/song.mp3"))
+        is None
+    )
     with pytest.raises(ValueError):
-        player._validate_track(
-            Track(id="bad", title="bad", source="url", source_url="https://techaistudy.com/")
-        )
+        player._validate_track(Track(id="bad", title="bad", source="url", source_url="https://techaistudy.com/"))
     # search tracks (source != "url") are not web-gated
     player._validate_track(Track(id="y", title="y", source="yt-dlp", source_url="http://example/1"))

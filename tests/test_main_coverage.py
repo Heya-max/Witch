@@ -349,6 +349,7 @@ def test_run_bot_happy_path(monkeypatch):
     assert assistant.stopped is True
     assert app.stopped is True
 
+
 def test_run_bot_db_not_ready(monkeypatch):
     idle_calls, init_voice = _run_bot_env(monkeypatch, db_ready=False)
     app = FakeBotApp(voice=FakeVoiceManager())

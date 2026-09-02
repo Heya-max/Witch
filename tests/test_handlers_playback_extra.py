@@ -548,6 +548,7 @@ async def test_cb_data_and_inline_callback_dispatch(monkeypatch):
 
     monkeypatch.setattr(pb, "_quiet_answer", record_quiet)
     try:
+
         class BoomQuery:
             data = "boom"
             message = None
@@ -1032,27 +1033,21 @@ async def test_play_handler_no_pm_lock_metric_paths(monkeypatch):
     # direct-play lock acquisition denied
     denied = FakeMessage(chat_id=1, user_id=7, text="/play my song")
     met = FakeMetrics()
-    await pb.play_handler(
-        _client(voice=FakeVoice(), player_manager=None, locks=LocksDenied(), metrics=met), denied
-    )
+    await pb.play_handler(_client(voice=FakeVoice(), player_manager=None, locks=LocksDenied(), metrics=met), denied)
     assert any("Another playback is starting" in r for r in denied.replies)
     assert "locks.acquire_failed.play" in met.calls
 
     # direct-play lock released successfully
     ok = FakeMessage(chat_id=1, user_id=7, text="/play my song")
     met2 = FakeMetrics()
-    await pb.play_handler(
-        _client(voice=FakeVoice(), player_manager=None, locks=LocksOk(), metrics=met2), ok
-    )
+    await pb.play_handler(_client(voice=FakeVoice(), player_manager=None, locks=LocksOk(), metrics=met2), ok)
     assert any("Playing" in r for r in ok.replies)
     assert "locks.released.play" in met2.calls
 
     # direct-play lock release failed (ok=False)
     fail = FakeMessage(chat_id=1, user_id=7, text="/play my song")
     met3 = FakeMetrics()
-    await pb.play_handler(
-        _client(voice=FakeVoice(), player_manager=None, locks=LocksReleaseFail(), metrics=met3), fail
-    )
+    await pb.play_handler(_client(voice=FakeVoice(), player_manager=None, locks=LocksReleaseFail(), metrics=met3), fail)
     assert "locks.release_failed.play" in met3.calls
 
     # direct-play lock release raising -> counted as a release exception

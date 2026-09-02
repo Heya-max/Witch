@@ -214,6 +214,7 @@ class FakeChosenResult:
         self.result_id = result_id
         self.from_user = user
 
+
 class FakeUser:
     id = 123
 

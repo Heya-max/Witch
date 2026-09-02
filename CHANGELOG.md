@@ -18,11 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cases, admin-guard denials, and player error branches.
 - Covered all services (`rate_limiter`, `locks`, `metrics`, `favorites`) and
   source providers (`simple_provider`, `yt_dlp_provider`) to 100%.
+- Postgres integration tests (`tests/test_integration_postgres.py`) exercising
+  queue persistence across instances, stale-row pruning, and favorites against
+  a real Postgres (picked up from the CI `postgres` service or the
+  docker-compose host mapping; skipped when neither is reachable).
+- CI coverage gate: the test job now runs `--cov=app --cov-fail-under=100`.
+  The `main.py` `__main__` guard is `# pragma: no cover`, so the suite reports a
+  literal 100% for `app/`.
+- `tests/conftest.py` selects the Windows SelectorEventLoop policy so asyncpg
+  integration tests pass on Windows developers' machines.
 
 ### Changed
 
-- CI: run tests with `-m "not integration"` so the Docker-backed integration test
-  doesn't run where external services aren't available.
+- CI: the test job now provisions a `postgres:15` service alongside Redis, so
+  both integration tests run in every matrix job.
 - CI: install the project's dev dependencies in the lint job so mypy has access
   to the full dependency set.
 - Error messages: replaced generic "Check logs." text with actionable
@@ -33,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session files / `.env` into images.
 - Fixed a missing `@pytest.mark.asyncio` on `test_player_advance_on_engine_finish`
   so the test runs instead of being silently skipped.
+- Added `pytest-cov` to the dev dependencies and a `[tool.coverage]` section so
+  coverage reports are consistent anywhere `pytest` runs.
 
 ## [0.1.0] - 2026-08-30
 

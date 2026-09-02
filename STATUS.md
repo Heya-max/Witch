@@ -55,20 +55,18 @@
 
 | Category | Count | Notes |
 | --- | --- | --- |
-| Test files | 41 | Unit tests covering all major subsystems |
-| Tests passing | 378 | `pytest` |
-| Coverage | 99% | `coverage` across `app/` (only `main.py:225` `__main__` guard uncovered) |
-| Integration tests | 1 | `test_integration_redis_metrics.py` (requires Redis) |
-| Linting | ✅ | `ruff check .` |
+| Test files | 42 | Unit tests covering all major subsystems |
+| Tests passing | 381 | `pytest` |
+| Coverage | 100% | `coverage` across `app/` (`main.py` `__main__` guard pragma-excluded) |
+| Integration tests | 2 | Redis locks/metrics + Postgres queue/favorites (CI services / docker-compose) |
+| Linting | ✅ | `ruff check .`, `ruff format --check .` |
 | Type checking | ✅ | `mypy app` |
 
 ## Known Issues / Debt
 
 - None reported (no open GitHub issues)
-- Integration tests require Docker/Redis (excluded from CI until services are provided)
 
 ## Next Steps
 
-1. Add Docker-backed Redis/postgres services to CI (enables full integration suite)
-2. Production deployment validation with real Telegram credentials
-3. Tag v0.1.0 release (CHANGELOG and .dockerignore added; needs Git tag + push)
+1. Production deployment validation with real Telegram credentials
+2. Tag v0.1.0 release (CHANGELOG and .dockerignore added; needs Git tag + push)
