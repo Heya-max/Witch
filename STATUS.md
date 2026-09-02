@@ -1,6 +1,6 @@
 # Witch - Project Status
 
-**Last updated:** 2026-09-01
+**Last updated:** 2026-09-02
 
 ## Overview
 
@@ -12,7 +12,7 @@
 | Tech Stack | Python 3.11+, pyrogrammod, py-tgcalls 2.3, yt-dlp, SQLAlchemy 2, Redis, Docker |
 | Repository | https://github.com/Heya-max/Witch |
 | Branch | `main` |
-| Commits | 8 (all on `main`) |
+| Commits | 11 (all on `main`) |
 
 ## Phase Status
 
@@ -22,8 +22,8 @@
 | Phase 2: Media features | ✅ Complete | `/download`, `/lyrics`, favorites, inline search |
 | Phase 3: Voice assistant | ✅ Complete | Userbot for auto-join/create voice chats |
 | Phase 4: Hardening | ✅ Complete | URL validation, queue health, graceful shutdown, observability |
-| Phase 5: Production | ⬜ Not started | Rate limiting, Prometheus, logging — implemented but not battle-tested |
-| Phase 6: Polish / v1.0 | ⬜ Not started | Error messages, UX, edge cases, comprehensive tests |
+| Phase 5: Production | ✅ Complete | Rate limiting, Prometheus, logging — covered by unit tests |
+| Phase 6: Polish / v1.0 | ✅ Complete | UX phrasing, edge cases, ~100% test coverage |
 
 ## Feature Matrix
 
@@ -55,8 +55,9 @@
 
 | Category | Count | Notes |
 | --- | --- | --- |
-| Test files | 30 | Unit tests covering all major subsystems |
-| Tests passing | 170 | `pytest -m "not integration"` |
+| Test files | 41 | Unit tests covering all major subsystems |
+| Tests passing | 378 | `pytest` |
+| Coverage | 99% | `coverage` across `app/` (only `main.py:225` `__main__` guard uncovered) |
 | Integration tests | 1 | `test_integration_redis_metrics.py` (requires Redis) |
 | Linting | ✅ | `ruff check .` |
 | Type checking | ✅ | `mypy app` |
@@ -68,9 +69,6 @@
 
 ## Next Steps
 
-1. Add integration tests for playback/queue lifecycle
-2. Add Docker-backed Redis/postgres services to CI (enables full integration suite)
-3. Production deployment validation with real Telegram credentials
-4. Error message coverage: add a/few more tests asserting new UX phrasing
-5. Tag v0.1.0 release (CHANGELOG and .dockerignore added; needs Git tag + push)
-6. Error message polish and UX improvements
+1. Add Docker-backed Redis/postgres services to CI (enables full integration suite)
+2. Production deployment validation with real Telegram credentials
+3. Tag v0.1.0 release (CHANGELOG and .dockerignore added; needs Git tag + push)

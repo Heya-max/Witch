@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Expanded test suite to 41 files / 378 passing tests, lifting `app/` coverage to
+  99% (the only uncovered statement is the `if __name__ == "__main__"` guard in
+  `main.py`).
+- Playback (`app/bot/handlers/playback.py`) and player queue/manager
+  (`app/player/queue.py`, `app/player/manager.py`) now reach 100% coverage,
+  exercising lock-failure metric paths, rate-limiter outages, inline-picker edge
+  cases, admin-guard denials, and player error branches.
+- Covered all services (`rate_limiter`, `locks`, `metrics`, `favorites`) and
+  source providers (`simple_provider`, `yt_dlp_provider`) to 100%.
+
 ### Changed
 
 - CI: run tests with `-m "not integration"` so the Docker-backed integration test

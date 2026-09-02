@@ -923,3 +923,366 @@ async def test_control_handlers_broken_manager():
     msg4 = FakeMessage(user_id=99, text="/skip")
     await pb.skip_handler(client, msg4)
     assert any("Failed to skip" in r for r in msg4.replies)
+
+
+class FakeMetrics:
+    def __init__(self):
+        self.calls = []
+
+    def inc(self, name, amount=1):
+        self.calls.append(name)
+
+
+class LocksReleaseFail:
+    async def acquire(self, *a, **k):
+        return "tok"
+
+    async def release(self, *a, **k):
+        return False
+
+
+class LocksReleaseRaise:
+    async def acquire(self, *a, **k):
+        return "tok"
+
+    async def release(self, *a, **k):
+        raise RuntimeError("release boom")
+
+
+@pytest.mark.asyncio
+async def test_join_leave_lock_metric_paths():
+    # join: acquire-denied increments the acquire_failed counter
+    denied = FakeMessage()
+    met1 = FakeMetrics()
+    await pb.join_handler(_client(voice=FakeVoice(), locks=LocksDenied(), metrics=met1), denied)
+    assert any("Another join/leave" in r for r in denied.replies)
+    assert "locks.acquire_failed.join" in met1.calls
+
+    # join: successful release with metrics present increments the released counter
+    ok = FakeMessage()
+    met2 = FakeMetrics()
+    await pb.join_handler(_client(voice=FakeVoice(), locks=LocksOk(), metrics=met2), ok)
+    assert any("Joined" in r for r in ok.replies)
+    assert "locks.released.join" in met2.calls
+
+    # join: release failure counts as released-failed (ok=False)
+    fail = FakeMessage()
+    met3 = FakeMetrics()
+    await pb.join_handler(_client(voice=FakeVoice(), locks=LocksReleaseFail(), metrics=met3), fail)
+    assert "locks.release_failed.join" in met3.calls
+
+    # join: release raising counts as a release exception
+    raise_join = FakeMessage()
+    met4 = FakeMetrics()
+    await pb.join_handler(_client(voice=FakeVoice(), locks=LocksReleaseRaise(), metrics=met4), raise_join)
+    assert "locks.release_exception.join" in met4.calls
+
+    # leave: acquire-denied increments the leave acquire_failed counter
+    leave_denied = FakeMessage()
+    met5 = FakeMetrics()
+    await pb.leave_handler(_client(voice=FakeVoice(), locks=LocksDenied(), metrics=met5), leave_denied)
+    assert "locks.acquire_failed.leave" in met5.calls
+
+    # leave: successful release with metrics increments released.leave
+    leave_ok = FakeMessage()
+    met6 = FakeMetrics()
+    await pb.leave_handler(_client(voice=FakeVoice(), locks=LocksOk(), metrics=met6), leave_ok)
+    assert any("Left" in r for r in leave_ok.replies)
+    assert "locks.released.leave" in met6.calls
+
+    # leave: release failure counts as released-failed
+    leave_fail = FakeMessage()
+    met7 = FakeMetrics()
+    await pb.leave_handler(_client(voice=FakeVoice(), locks=LocksReleaseFail(), metrics=met7), leave_fail)
+    assert "locks.release_failed.leave" in met7.calls
+
+    # leave: release raising counts as a release exception
+    leave_raise = FakeMessage()
+    met8 = FakeMetrics()
+    await pb.leave_handler(_client(voice=FakeVoice(), locks=LocksReleaseRaise(), metrics=met8), leave_raise)
+    assert "locks.release_exception.leave" in met8.calls
+
+    # leave: the voice client failing propagates to the outer error reply
+    class ErrLeaveVoice(FakeVoice):
+        async def leave(self, chat_id):
+            raise RuntimeError("leave boom")
+
+    leave_broken = FakeMessage()
+    await pb.leave_handler(_client(voice=ErrLeaveVoice(), locks=LocksOk()), leave_broken)
+    assert any("Failed to leave" in r for r in leave_broken.replies)
+
+
+@pytest.mark.asyncio
+async def test_play_handler_rate_limiter_exception(monkeypatch):
+    class RaisingRL:
+        async def allow(self, key, limit, period):
+            raise RuntimeError("redis down")
+
+    monkeypatch.setattr(pb, "get_default_providers", lambda: [])
+    client = _client(voice=FakeVoice(), rate_limiter=RaisingRL(), player_manager=None)
+    msg = FakeMessage(chat_id=1, user_id=7, text="/play my song")
+    await pb.play_handler(client, msg)
+    assert any("Playing" in r for r in msg.replies)
+
+
+@pytest.mark.asyncio
+async def test_play_handler_no_pm_lock_metric_paths(monkeypatch):
+    monkeypatch.setattr(pb, "get_default_providers", lambda: [])
+
+    # direct-play lock acquisition denied
+    denied = FakeMessage(chat_id=1, user_id=7, text="/play my song")
+    met = FakeMetrics()
+    await pb.play_handler(
+        _client(voice=FakeVoice(), player_manager=None, locks=LocksDenied(), metrics=met), denied
+    )
+    assert any("Another playback is starting" in r for r in denied.replies)
+    assert "locks.acquire_failed.play" in met.calls
+
+    # direct-play lock released successfully
+    ok = FakeMessage(chat_id=1, user_id=7, text="/play my song")
+    met2 = FakeMetrics()
+    await pb.play_handler(
+        _client(voice=FakeVoice(), player_manager=None, locks=LocksOk(), metrics=met2), ok
+    )
+    assert any("Playing" in r for r in ok.replies)
+    assert "locks.released.play" in met2.calls
+
+    # direct-play lock release failed (ok=False)
+    fail = FakeMessage(chat_id=1, user_id=7, text="/play my song")
+    met3 = FakeMetrics()
+    await pb.play_handler(
+        _client(voice=FakeVoice(), player_manager=None, locks=LocksReleaseFail(), metrics=met3), fail
+    )
+    assert "locks.release_failed.play" in met3.calls
+
+    # direct-play lock release raising -> counted as a release exception
+    raise_play = FakeMessage(chat_id=1, user_id=7, text="/play my song")
+    met4 = FakeMetrics()
+    await pb.play_handler(
+        _client(voice=FakeVoice(), player_manager=None, locks=LocksReleaseRaise(), metrics=met4), raise_play
+    )
+    assert any("Playing" in r for r in raise_play.replies)
+    assert "locks.release_exception.play" in met4.calls
+
+
+@pytest.mark.asyncio
+async def test_play_handler_enqueue_value_error(monkeypatch):
+    class ValueErrorPlayer(FakePlayer):
+        async def enqueue(self, track):
+            raise ValueError("That's not a playable audio source")
+
+    monkeypatch.setattr(pb, "get_default_providers", lambda: [])
+    msg = FakeMessage(chat_id=1, user_id=7, text="/play my song")
+    await pb.play_handler(_client(voice=FakeVoice(), player_manager=FakePlayerManager(ValueErrorPlayer())), msg)
+    assert any("not a playable" in r for r in msg.replies)
+
+
+@pytest.mark.asyncio
+async def test_resolve_track_empty_and_broken_inner(monkeypatch):
+    class EmptyProvider:
+        async def search(self, query):
+            return []
+
+    monkeypatch.setattr(pb, "get_default_providers", lambda: [EmptyProvider()])
+    client = _client()
+    msg = FakeMessage(user_id=7, text="/play x")
+    track, url, prov, results = await pb._resolve_track(client, msg, "some title")
+    assert prov is None
+    assert track.source == "url"
+    assert url == "some title"
+
+    class ResolveFail:
+        async def search(self, query):
+            return [Track(id="bad", title="Bad", source="yt-dlp", source_url="http://sc/bad")]
+
+        async def resolve_audio(self, ref):
+            raise RuntimeError("resolve down")
+
+    class GoodProvider:
+        async def search(self, query):
+            return [Track(id="ok", title="Good", source="yt-dlp", source_url="http://sc/ok")]
+
+        async def resolve_audio(self, ref):
+            return "http://audio/m3u8"
+
+    monkeypatch.setattr(pb, "get_default_providers", lambda: [ResolveFail(), GoodProvider()])
+    track2, url2, _prov, _results = await pb._resolve_track(client, msg, "x")
+    assert track2.id == "ok"
+    assert url2 == "http://audio/m3u8"
+
+
+@pytest.mark.asyncio
+async def test_playnext_playlist_sets_requested_by(monkeypatch):
+    player = FakePlayer()
+    client = _client(player_manager=FakePlayerManager(player), voice=FakeVoice())
+    first = Track(id="a", title="First")
+    monkeypatch.setattr(pb, "_maybe_playlist", _fake_playlist(first))
+    msg = FakeMessage(chat_id=1, user_id=7, text="/playnext https://youtu.be/abc")
+    await pb.playnext_handler(client, msg)
+    assert player.enqueued_next
+    assert first.requested_by == 7
+
+
+@pytest.mark.asyncio
+async def test_playnext_picker_returns_and_value_error(monkeypatch):
+    provider = type("P", (), {})()
+
+    async def resolve(client, message, input_source):
+        return (
+            Track(id="1", title="One"),
+            "http://audio/m3u8",
+            provider,
+            [Track(id="1", title="One"), Track(id="2", title="Two")],
+        )
+
+    monkeypatch.setattr(pb, "_resolve_track", resolve)
+    player = FakePlayer()
+    client = _client(player_manager=FakePlayerManager(player), voice=FakeVoice())
+    client.pending_picks = {}
+    msg = FakeMessage(chat_id=1, user_id=7, text="/playnext some query")
+    await pb.playnext_handler(client, msg)
+    assert any("Search results" in r for r in msg.replies)
+    assert player.enqueued_next == []
+
+    async def refuse(client, message, input_source):
+        raise ValueError("bad input source")
+
+    monkeypatch.setattr(pb, "_resolve_track", refuse)
+    msg2 = FakeMessage(chat_id=1, user_id=7, text="/playnext some query")
+    await pb.playnext_handler(client, msg2)
+    assert any("bad input source" in r for r in msg2.replies)
+
+
+@pytest.mark.asyncio
+async def test_quiet_answer_without_alert():
+    q = FakeQuery("pick:x:0")
+    await pb._quiet_answer(q, "bye", show_alert=False)
+    assert q.answered == "bye"
+    assert q.alerted is False
+
+
+@pytest.mark.asyncio
+async def test_pick_callback_unexpected_enqueue_error(monkeypatch):
+    provider = type("P", (), {})()
+    provider.tracks = [
+        Track(id="1", title="One", source="yt-dlp", source_url="http://sc/x"),
+        Track(id="2", title="Two", source="yt-dlp", source_url="http://sc/y"),
+    ]
+
+    async def good_resolve(ref):
+        return "http://audio/m3u8"
+
+    provider.resolve_audio = good_resolve
+
+    class BoomPlayer(FakePlayer):
+        async def enqueue(self, track):
+            raise RuntimeError("boom")
+
+    client = _client(player_manager=FakePlayerManager(BoomPlayer()), voice=FakeVoice())
+    client.pending_picks = {}
+    msg = FakeMessage(chat_id=1, user_id=7)
+    await pb._offer_picker(client, msg, 1, provider, provider.tracks)
+    nonce = list(client.pending_picks)[0]
+    q = FakeQuery(f"pick:{nonce}:0", user_id=7)
+    await pb.pick_callback(client, q)
+    assert "Failed to start playback" in q.answered
+
+
+@pytest.mark.asyncio
+async def test_admin_guard_permission_check_failure(monkeypatch):
+    async def raise_privileged(client, message):
+        raise RuntimeError("telegram down")
+
+    monkeypatch.setattr(pb, "_is_privileged", raise_privileged)
+    msg = FakeMessage(user_id=99)
+    assert await pb._admin_guard(owner_client(), msg) is False
+    assert any("Permission check failed" in r for r in msg.replies)
+
+
+@pytest.mark.asyncio
+async def test_admin_guarded_handlers_denied(monkeypatch):
+    async def deny_guard(client, message):
+        return False
+
+    monkeypatch.setattr(pb, "_admin_guard", deny_guard)
+
+    msg = FakeMessage(user_id=99, text="/rm 1")
+    await pb.remove_handler(owner_client(), msg)
+    assert msg.replies == []
+
+    msg2 = FakeMessage(user_id=99, text="/move 1 2")
+    await pb.move_handler(owner_client(), msg2)
+    assert msg2.replies == []
+
+    msg3 = FakeMessage(user_id=99, text="/shuffle")
+    await pb.shuffle_handler(owner_client(), msg3)
+    assert msg3.replies == []
+
+    msg4 = FakeMessage(user_id=99, text="/pause")
+    await pb.pause_handler(owner_client(), msg4)
+    assert msg4.replies == []
+
+    msg5 = FakeMessage(user_id=99, text="/resume")
+    await pb.resume_handler(owner_client(), msg5)
+    assert msg5.replies == []
+
+    msg6 = FakeMessage(user_id=99, text="/volume 50")
+    await pb.volume_handler(owner_client(), msg6)
+    assert msg6.replies == []
+
+
+@pytest.mark.asyncio
+async def test_volume_handler_applied():
+    msg = FakeMessage(user_id=99, text="/volume 50")
+    await pb.volume_handler(owner_client(player_manager=FakePlayerManager(FakePlayer())), msg)
+    assert any("Volume set to 50%" in r for r in msg.replies)
+
+
+@pytest.mark.asyncio
+async def test_stop_permission_failure_and_stop_error(monkeypatch):
+    async def raise_privileged(client, message):
+        raise RuntimeError("permission service down")
+
+    monkeypatch.setattr(pb, "_is_privileged", raise_privileged)
+    msg = FakeMessage(user_id=99, text="/stop")
+    await pb.stop_handler(owner_client(player_manager=FakePlayerManager(FakePlayer())), msg)
+    assert any("Permission check failed" in r for r in msg.replies)
+
+    class StopFail(FakePlayer):
+        async def stop(self):
+            raise RuntimeError("player stopped")
+
+    async def allow_privileged(client, message):
+        return True
+
+    monkeypatch.setattr(pb, "_is_privileged", allow_privileged)
+    stop_msg = FakeMessage(user_id=99, text="/stop")
+    await pb.stop_handler(owner_client(player_manager=FakePlayerManager(StopFail())), stop_msg)
+    assert any("Failed to stop playback" in r for r in stop_msg.replies)
+
+
+@pytest.mark.asyncio
+async def test_skip_clear_permission_paths(monkeypatch):
+    async def raise_privileged(client, message):
+        raise RuntimeError("permission service down")
+
+    monkeypatch.setattr(pb, "_is_privileged", raise_privileged)
+    msg = FakeMessage(user_id=99, text="/skip")
+    await pb.skip_handler(owner_client(player_manager=FakePlayerManager(FakePlayer())), msg)
+    assert any("Permission check failed" in r for r in msg.replies)
+
+    msg2 = FakeMessage(user_id=99, text="/clear")
+    await pb.clear_handler(owner_client(player_manager=FakePlayerManager(FakePlayer())), msg2)
+    assert any("Permission check failed" in r for r in msg2.replies)
+
+    async def deny_privileged(client, message):
+        return False
+
+    monkeypatch.setattr(pb, "_is_privileged", deny_privileged)
+    msg3 = FakeMessage(user_id=99, text="/skip")
+    await pb.skip_handler(owner_client(player_manager=FakePlayerManager(FakePlayer())), msg3)
+    assert any("don't have permission to skip" in r for r in msg3.replies)
+
+    msg4 = FakeMessage(user_id=99, text="/clear")
+    await pb.clear_handler(owner_client(player_manager=FakePlayerManager(FakePlayer())), msg4)
+    assert any("don't have permission to clear" in r for r in msg4.replies)
